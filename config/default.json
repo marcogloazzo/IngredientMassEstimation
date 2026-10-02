@@ -1,0 +1,21 @@
+{
+  "seed": 42,
+  "top_k": 50,
+  "validation_fraction": 0.15,
+  "encoder": "efficientnet_b0",
+  "hidden_dim": 384,
+  "dropout": 0.25,
+  "batch_size": 256,
+  "epochs": 100,
+  "learning_rate": 0.001,
+  "weight_decay": 0.0001,
+  "patience": 12,
+  "presence_threshold": 0.5,
+  "loss_weights": {
+    "presence": 1.0,
+    "shares": 5.0,
+    "mass": 1.0,
+    "nutrition": 0.25
+  }
+}
+

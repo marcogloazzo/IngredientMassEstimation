@@ -1,0 +1,55 @@
+{
+  "date": "2026-10-01",
+  "source_records": "../data/processed/records.jsonl",
+  "method": "Rank ingredient IDs by training-dish frequency, then total training grams, descending. Keep K-1 IDs and group remainder as other. Build per-gram nutrient profiles from training only. For each validation dish, use the true component masses and apply this table. No model inference or training.",
+  "interpretation": "Representation diagnostic, not predicted performance and not a mathematical lower bound for arbitrary predicted masses.",
+  "training_images": 2332,
+  "validation_images": 423,
+  "test_images": 507,
+  "training_unique_ingredient_ids": 197,
+  "overhead_rgb_files_on_disk": 3490,
+  "overhead_rgb_bytes_on_disk": 1454144607,
+  "variants": [
+    {
+      "classes_including_other": 50,
+      "minimum_selected_train_dish_support": 112,
+      "train_other_mass_fraction": 0.35341877523850712,
+      "validation_other_mass_fraction": 0.3580244188829359,
+      "validation_true_masses_conversion_mae": {
+        "calories_kcal": 63.943481156624209,
+        "fat_grams": 5.027742576392332,
+        "carbohydrates_grams": 5.6816411833921761,
+        "protein_grams": 5.0371262694787342
+      }
+    },
+    {
+      "classes_including_other": 100,
+      "minimum_selected_train_dish_support": 33,
+      "train_other_mass_fraction": 0.0951039440863527,
+      "validation_other_mass_fraction": 0.089096293498210521,
+      "validation_true_masses_conversion_mae": {
+        "calories_kcal": 15.211313424331887,
+        "fat_grams": 1.0514718253238409,
+        "carbohydrates_grams": 2.4826010292446541,
+        "protein_grams": 1.4113556180291944
+      }
+    },
+    {
+      "classes_including_other": 150,
+      "minimum_selected_train_dish_support": 10,
+      "train_other_mass_fraction": 0.025223161437592092,
+      "validation_other_mass_fraction": 0.02183487013652196,
+      "validation_true_masses_conversion_mae": {
+        "calories_kcal": 4.7451216112660282,
+        "fat_grams": 0.42962232462285344,
+        "carbohydrates_grams": 0.41060181365635812,
+        "protein_grams": 0.23113271458604021
+      }
+    }
+  ],
+  "current_50_class_table_test_diagnostic": {
+    "use": "Explanation of existing representation only; no checkpoint selection.",
+    "other_mass_fraction": 0.3615022983998476,
+    "true_masses_calories_mae_kcal": 63.762392984103819
+  }
+}

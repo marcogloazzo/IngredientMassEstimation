@@ -1,0 +1,6 @@
+# This project can reuse OmniFood8K/Code/.venv to avoid duplicating PyTorch.
+torch>=2.3,<3
+torchvision>=0.18,<1
+numpy>=1.24,<3
+Pillow>=10,<13
+tqdm>=4.66,<5

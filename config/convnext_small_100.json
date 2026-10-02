@@ -1,0 +1,21 @@
+{
+  "seed": 42,
+  "top_k": 100,
+  "validation_fraction": 0.15,
+  "encoder": "convnext_small",
+  "hidden_dim": 192,
+  "dropout": 0.4,
+  "batch_size": 256,
+  "epochs": 120,
+  "learning_rate": 0.0007,
+  "weight_decay": 0.001,
+  "patience": 15,
+  "selection_metric": "micro_f1",
+  "presence_threshold": 0.5,
+  "loss_weights": {
+    "presence": 1.0,
+    "shares": 5.0,
+    "mass": 1.0,
+    "nutrition": 0.25
+  }
+}
