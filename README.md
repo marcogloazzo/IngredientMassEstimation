@@ -1,5 +1,22 @@
 # Estimación de ingredientes y masa con bajo cómputo
 
+## V2: multiescala RGB y profundidad estimada
+
+La nueva variante mantiene una sola imagen RGB como entrada y agrega Depth Anything
+V2 Small congelado, una CNN de profundidad entrenable, fusión de etapas 3/4 de
+ConvNeXt Small y dos capas de atención cruzada. Tras tres épocas de warmup se
+ajustan etapas 2–4; solo stem/etapa 1 permanecen congelados. Las pérdidas y los
+cabezales 768 → 384 → 192 se conservan.
+
+- [Arquitectura V2](ARQUITECTURA_QUERY2LABEL_V2.md).
+- [Guía Colab, Git y Drive](COLAB_QUERY2LABEL_V2.md).
+- [Notebook Colab V2](COLAB_QUERY2LABEL_V2.ipynb).
+- Configuración: `config/query2label_100_v2.json`.
+
+La V2 requiere una corrida nueva, no reanudar desde V1. No se ha entrenado ni
+medido todavía; el notebook deja desactivados entrenamiento/evaluación/inferencia.
+Las variantes de referencia y su documentación histórica continúan debajo.
+
 Este proyecto es una segunda etapa independiente de `OmniFood8K`. Recibe una sola
 imagen RGB y produce:
 

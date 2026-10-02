@@ -1,4 +1,4 @@
-"""Train Q2L heads and the final ConvNeXt Small stage; never train on test."""
+"""Train spatial Q2L v1/v2 with partial ConvNeXt adjustment; never train on test."""
 import argparse
 import csv
 import json
@@ -18,7 +18,7 @@ from ingredient_mass.features import resolve_device
 from ingredient_mass.image_training import load_prepared, make_loader, positive_class_weights, run_epoch
 from ingredient_mass.metrics import full_metrics
 from ingredient_mass.model import load_checkpoint, mean_training_mass
-from ingredient_mass.spatial_model import MODEL_TYPE, ConvNeXtQuery2Label
+from ingredient_mass.spatial_model import MODEL_TYPE_V2, create_image_model
 
 
 def parse_args():
@@ -28,6 +28,7 @@ def parse_args():
     parser.add_argument("--processed-dir", type=Path, default=PROJECT_ROOT / "data/processed_100")
     parser.add_argument("--output-dir", type=Path, default=PROJECT_ROOT / "artifacts/query2label_100_asl")
     parser.add_argument("--torch-cache", type=Path, default=PROJECT_ROOT / "cache/torch")
+    parser.add_argument("--depth-cache", type=Path, help="V2 aligned relative-depth cache generated from RGB")
     parser.add_argument("--device", choices=("auto", "cuda", "cpu"), default="cuda")
     parser.add_argument("--workers", type=int, default=2)
     parser.add_argument("--presence-loss", choices=("asl", "bce"))
@@ -73,8 +74,9 @@ def main():
         value = getattr(args, key)
         if value is not None:
             config[key] = value
-    if config.get("encoder_training") != "last_stage":
-        raise ValueError("This implementation trains only the final encoder stage")
+    expected_training = "stages_2_4" if config.get("model_type") == MODEL_TYPE_V2 else "last_stage"
+    if config.get("encoder_training") != expected_training:
+        raise ValueError(f"This model requires encoder_training={expected_training}")
     if config.get("shared_dims") != [384, 192]:
         raise ValueError("This implementation uses the agreed shared_dims [384, 192]")
     if config["presence_loss"] not in ("asl", "bce"):
@@ -87,6 +89,10 @@ def main():
     config["mass_scale"] = mean_training_mass(
         record["total_mass"] for record in records if record["split"] == "train"
     )
+    if config.get("model_type") == MODEL_TYPE_V2:
+        from ingredient_mass.depth import validate_depth_cache
+        manifest = validate_depth_cache(args.depth_cache, records, config)
+        config["depth_checkpoint_sha256"] = manifest["checkpoint_sha256"]
     if args.check_data:
         print(json.dumps({"config": config, "classes": len(vocabulary["entries"]),
                           "splits": {split: sum(r["split"] == split for r in records)
@@ -104,19 +110,20 @@ def main():
         torch.cuda.manual_seed_all(seed)
     resumed = load_checkpoint(args.resume, "cpu") if args.resume else None
     if resumed is not None:
-        if resumed.get("model_type") != MODEL_TYPE or resumed["vocabulary"] != vocabulary:
+        if resumed.get("model_type") != config["model_type"] or resumed["vocabulary"] != vocabulary:
             raise ValueError("Resume checkpoint architecture/vocabulary differs")
         for key, value in config.items():
             if key != "epochs" and resumed["config"].get(key) != value:
                 raise ValueError(f"Resume config differs at {key}; use a new experiment")
-    model = ConvNeXtQuery2Label(len(vocabulary["entries"]), config,
+    model = create_image_model(len(vocabulary["entries"]), config,
                                pretrained=resumed is None, torch_cache=args.torch_cache).to(device)
     if resumed:
         model.load_state_dict(resumed["model_state"], strict=True)
     train_loader = make_loader(records, vocabulary, args.dataset_root, "train", int(config["batch_size"]),
-                               args.workers, device, training=True, seed=seed)
+                               args.workers, device, training=True, seed=seed,
+                               config=config, depth_cache=args.depth_cache)
     validation_loader = make_loader(records, vocabulary, args.dataset_root, "validation", int(config["batch_size"]),
-                                    args.workers, device, seed=seed)
+                                    args.workers, device, seed=seed, config=config, depth_cache=args.depth_cache)
     matrix_np = nutrient_matrix(vocabulary)
     matrix = torch.from_numpy(matrix_np).to(device)
     positive_weights = positive_class_weights(records, vocabulary).to(device)
@@ -138,6 +145,7 @@ def main():
     output_dir.mkdir(parents=True, exist_ok=True)
     write_json(output_dir / "config.json", config)
     print(f"Device: {device}; presence loss: {config['presence_loss']}; classes: {len(vocabulary['entries'])}")
+    print(f"Model: {config['model_type']}; encoder adjustment: {config['encoder_training']}", flush=True)
     print(f"Total-mass loss scale (training mean): {config['mass_scale']:.6f} g")
     print(f"Effective batch: {config['batch_size']} x {config['accumulation_steps']}; selection: {selection}")
     history_path = output_dir / "history.csv"
@@ -152,7 +160,8 @@ def main():
             begin = time.perf_counter()
             encoder_enabled = epoch > int(config.get("warmup_epochs", 3))
             model.set_encoder_trainable(encoder_enabled)
-            print(f"Epoch {epoch}: encoder last stage {'trainable' if encoder_enabled else 'frozen (warmup)'}")
+            print(f"Epoch {epoch}: encoder {config['encoder_training']} "
+                  f"{'trainable' if encoder_enabled else 'frozen (warmup)'}", flush=True)
             train_losses, _, _ = run_epoch(model, train_loader, matrix, positive_weights, config, device,
                                            optimizer, scaler, f"Train {epoch}", collect=False)
             validation_losses, predictions, targets = run_epoch(
@@ -177,7 +186,7 @@ def main():
             else:
                 stale += 1
             payload = {
-                "model_type": MODEL_TYPE, "model_state": model.state_dict(), "config": config,
+                "model_type": config["model_type"], "model_state": model.state_dict(), "config": config,
                 "vocabulary": vocabulary, "epoch": epoch, "validation_metrics": metrics,
                 "validation_losses": validation_losses, "selected_by": selection, "best_value": best,
             }

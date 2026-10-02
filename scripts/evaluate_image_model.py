@@ -14,7 +14,7 @@ from ingredient_mass.features import resolve_device
 from ingredient_mass.image_training import load_prepared, make_loader, positive_class_weights, run_epoch, save_predictions
 from ingredient_mass.metrics import find_best_global_threshold, full_metrics
 from ingredient_mass.model import load_checkpoint
-from ingredient_mass.spatial_model import model_from_checkpoint
+from ingredient_mass.spatial_model import MODEL_TYPE_V2, model_from_checkpoint
 
 
 def main():
@@ -27,6 +27,7 @@ def main():
     parser.add_argument("--device", choices=("auto", "cuda", "cpu"), default="auto")
     parser.add_argument("--batch-size", type=int, default=8)
     parser.add_argument("--workers", type=int, default=2)
+    parser.add_argument("--depth-cache", type=Path, help="Required for v2; reuse the training depth cache")
     parser.add_argument("--calibrate", action="store_true", help="Validation only; also save calibrated.pt")
     args = parser.parse_args()
     if args.calibrate and args.split != "validation":
@@ -36,9 +37,13 @@ def main():
     records, prepared_vocabulary = load_prepared(args.processed_dir, args.dataset_root, config)
     if prepared_vocabulary != vocabulary:
         raise ValueError("Prepared vocabulary/nutrient profiles differ from the trained checkpoint")
+    if checkpoint["model_type"] == MODEL_TYPE_V2:
+        from ingredient_mass.depth import validate_depth_cache
+        validate_depth_cache(args.depth_cache, records, config)
     device = resolve_device(args.device)
     model = model_from_checkpoint(checkpoint, device)
-    loader = make_loader(records, vocabulary, args.dataset_root, args.split, args.batch_size, args.workers, device)
+    loader = make_loader(records, vocabulary, args.dataset_root, args.split, args.batch_size, args.workers, device,
+                         config=config, depth_cache=args.depth_cache)
     matrix_np = nutrient_matrix(vocabulary)
     losses, predictions, targets = run_epoch(
         model, loader, torch.from_numpy(matrix_np).to(device),

@@ -1,0 +1,41 @@
+{
+  "schema_version": 1,
+  "source": "user_reported_measurements",
+  "recorded_date": "2026-10-02",
+  "mass_unit": "g",
+  "purpose": "reference_evaluation_only",
+  "notes": "Pesos informados por el usuario para alimentos cocidos. La masa total se calcula sumando los ingredientes informados. No se asignan automáticamente clases del vocabulario Nutrition5k ni valores nutricionales. Estas anotaciones no se incorporan automáticamente a train, validation o test.",
+  "photos": [
+    {
+      "image": "IMG_9993.png",
+      "total_mass_grams": 386.0,
+      "total_mass_source": "sum_of_reported_ingredients",
+      "ingredients": [
+        {
+          "name": "bife de chorizo",
+          "cooking_state": "cocido",
+          "grams": 224.0
+        },
+        {
+          "name": "arroz blanco",
+          "cooking_state": "cocido",
+          "grams": 162.0
+        }
+      ],
+      "nutrition": null
+    },
+    {
+      "image": "IMG_9983.png",
+      "total_mass_grams": 162.0,
+      "total_mass_source": "sum_of_reported_ingredients",
+      "ingredients": [
+        {
+          "name": "arroz blanco",
+          "cooking_state": "cocido",
+          "grams": 162.0
+        }
+      ],
+      "nutrition": null
+    }
+  ]
+}

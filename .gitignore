@@ -21,3 +21,13 @@ cache/
 *.pth
 *.pt
 *.npz
+
+# Local Colab exports, personal RGB photos, generated depth and downloaded code.
+runs/
+reports/
+predictions/
+photos/*
+!photos/annotations.json
+data/depth_*/
+third_party/
+.ipynb_checkpoints/

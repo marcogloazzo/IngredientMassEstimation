@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from contextlib import nullcontext
 from pathlib import Path
+import sys
 
 import numpy as np
 import torch
@@ -12,13 +13,13 @@ from tqdm import tqdm
 from .data import read_json, read_jsonl, vectorize_record
 from .features import PreparedImageDataset
 from .model import compute_loss
-from .spatial_model import MODEL_TYPE, image_transforms
+from .spatial_model import SUPPORTED_MODEL_TYPES, MODEL_TYPE_V2, image_transforms
 
 
 def load_prepared(processed_dir: Path, dataset_root: Path, config: dict):
     vocabulary = read_json(processed_dir / "vocabulary.json")
     records = read_jsonl(processed_dir / "records.jsonl")
-    if config.get("model_type") != MODEL_TYPE or config.get("encoder") != "convnext_small":
+    if config.get("model_type") not in SUPPORTED_MODEL_TYPES or config.get("encoder") != "convnext_small":
         raise ValueError("Use the spatial ConvNeXt Small configuration")
     if len(vocabulary["entries"]) != int(config["top_k"]):
         raise ValueError("Vocabulary size differs from config top_k; prepare labels with this config")
@@ -29,11 +30,17 @@ def load_prepared(processed_dir: Path, dataset_root: Path, config: dict):
 
 
 def make_loader(records, vocabulary, dataset_root, split, batch_size, workers, device,
-                training=False, seed=42):
+                training=False, seed=42, config=None, depth_cache=None):
     selected = [record for record in records if record["split"] == split]
     if not selected:
         raise ValueError(f"No records for split {split}")
-    dataset = PreparedImageDataset(selected, dataset_root, vocabulary, image_transforms(training))
+    if config and config.get("model_type") == MODEL_TYPE_V2:
+        from .depth import PairedDepthDataset
+        if depth_cache is None:
+            raise ValueError("V2 loader requires --depth-cache")
+        dataset = PairedDepthDataset(selected, dataset_root, vocabulary, depth_cache, training)
+    else:
+        dataset = PreparedImageDataset(selected, dataset_root, vocabulary, image_transforms(training))
     generator = torch.Generator().manual_seed(seed)
     return DataLoader(
         dataset, batch_size=batch_size, shuffle=training, num_workers=workers,
@@ -65,14 +72,17 @@ def run_epoch(model, loader, matrix, positive_weights, config, device,
     collected = {key: [] for key in ("presence", "shares", "mass")}
     targets = {key: [] for key in ("presence", "shares", "masses", "total_mass", "nutrients", "dish_ids")}
     totals, sample_count = {}, 0
-    progress = tqdm(loader, desc=description, unit="batch")
+    progress = tqdm(loader, desc=description, unit="batch", file=sys.stdout, mininterval=1)
     for index, batch in enumerate(progress):
         images = batch["image"].to(device, non_blocking=True)
         target = {key: batch[key].to(device, non_blocking=True)
                   for key in ("presence", "shares", "masses", "total_mass", "nutrients")}
         with torch.set_grad_enabled(training):
             with autocast_context(device, config.get("amp", True)):
-                outputs = model(images)
+                if "depth" in batch:
+                    outputs = model(images, depth=batch["depth"].to(device, non_blocking=True))
+                else:
+                    outputs = model(images)
             # All loss arithmetic outside autocast, using FP32 model predictions.
             loss, parts = compute_loss(
                 outputs, target["presence"], target["shares"], target["total_mass"],

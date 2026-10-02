@@ -16,6 +16,8 @@ from torch.nn import functional as F
 
 
 MODEL_TYPE = "convnext_small_query2label"
+MODEL_TYPE_V2 = "convnext_small_query2label_multiscale_depth_v2"
+SUPPORTED_MODEL_TYPES = (MODEL_TYPE, MODEL_TYPE_V2)
 
 
 def position_encoding(height: int, width: int, dimension: int, device, dtype):
@@ -106,8 +108,17 @@ class SpatialIngredientHeads(nn.Module):
     def forward(self, spatial, return_attention=False):
         batch, _, height, width = spatial.shape
         memory = self.input_projection(spatial).flatten(2).transpose(1, 2)
-        queries = self.queries.weight[None].expand(batch, -1, -1)
         positions = position_encoding(height, width, memory.shape[-1], memory.device, memory.dtype)
+        outputs, weights = self.forward_memory(memory, positions, return_attention)
+        if return_attention:
+            outputs.update({"attention": weights.reshape(batch, -1, height, width),
+                            "spatial_features": spatial})
+        return outputs
+
+    def forward_memory(self, memory, positions, return_attention=False):
+        """Decode any spatial memory; preserve v1 head names/checkpoint layout."""
+        batch = memory.shape[0]
+        queries = self.queries.weight[None].expand(batch, -1, -1)
         labels = torch.zeros_like(queries)
         weights = None
         for layer in self.decoder:
@@ -128,11 +139,10 @@ class SpatialIngredientHeads(nn.Module):
         }
         if return_attention:
             outputs.update({
-                "attention": weights.reshape(batch, -1, height, width),
-                "spatial_features": spatial, "label_features": labels,
+                "label_features": labels,
                 "projected_label_features": projected, "shared_features": hidden,
             })
-        return outputs
+        return outputs, weights
 
 
 class ConvNeXtQuery2Label(nn.Module):
@@ -195,10 +205,21 @@ def image_transforms(training=False):
 
 
 def model_from_checkpoint(checkpoint, device):
-    if checkpoint.get("model_type") != MODEL_TYPE:
+    if checkpoint.get("model_type") not in SUPPORTED_MODEL_TYPES:
         raise ValueError("This script requires a spatial Query2Label checkpoint, not cached-feature heads.")
     # All encoder weights are in the checkpoint; inference must not download ImageNet again.
-    model = ConvNeXtQuery2Label(len(checkpoint["vocabulary"]["entries"]),
-                               checkpoint["config"], pretrained=False)
+    config = dict(checkpoint["config"])
+    config["model_type"] = checkpoint["model_type"]
+    model = create_image_model(len(checkpoint["vocabulary"]["entries"]), config, pretrained=False)
     model.load_state_dict(checkpoint["model_state"], strict=True)
     return model.to(device).eval()
+
+
+def create_image_model(ingredient_count, config, pretrained=True, torch_cache=None):
+    model_type = config.get("model_type", MODEL_TYPE)
+    if model_type == MODEL_TYPE:
+        return ConvNeXtQuery2Label(ingredient_count, config, pretrained, torch_cache)
+    if model_type == MODEL_TYPE_V2:
+        from .multiscale_model import ConvNeXtMultiscaleDepth
+        return ConvNeXtMultiscaleDepth(ingredient_count, config, pretrained, torch_cache)
+    raise ValueError(f"Unsupported model type: {model_type}")

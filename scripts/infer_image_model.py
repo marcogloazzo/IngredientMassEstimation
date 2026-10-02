@@ -14,7 +14,7 @@ sys.path.insert(0, str(PROJECT_ROOT / "src"))
 from ingredient_mass.data import nutrient_matrix, write_json
 from ingredient_mass.features import resolve_device
 from ingredient_mass.model import load_checkpoint
-from ingredient_mass.spatial_model import image_transforms, model_from_checkpoint
+from ingredient_mass.spatial_model import MODEL_TYPE_V2, image_transforms, model_from_checkpoint
 
 
 def save_intermediates(output_dir, tensor, outputs, vocabulary, top_k):
@@ -34,19 +34,27 @@ def save_intermediates(output_dir, tensor, outputs, vocabulary, top_k):
     rgb = np.clip((arrays["normalized_input"][0].transpose(1, 2, 0) * std + mean) * 255, 0, 255).astype(np.uint8)
     preview = Image.fromarray(rgb)
     preview.save(directory / "input_crop.png")
+    if "depth_input" in arrays:
+        Image.fromarray((arrays["depth_input"][0, 0] * 255).clip(0, 255).astype(np.uint8)).save(
+            directory / "estimated_relative_depth.png")
     order = np.argsort(arrays["ingredient_masses"][0])[::-1][:top_k]
     for rank, index in enumerate(order, 1):
-        attention = arrays["attention"][0, index]
-        relative = (attention - attention.min()) / max(float(np.ptp(attention)), 1e-8)
-        heatmap = Image.fromarray((relative * 255).astype(np.uint8)).resize(preview.size, Image.Resampling.BILINEAR)
-        strength = np.asarray(heatmap, dtype=np.float32) / 255
-        alpha = 0.55 * strength[:, :, None]
-        red = np.zeros_like(rgb)
-        red[:, :, 0] = 255
-        overlay = ((1 - alpha) * rgb + alpha * red).astype(np.uint8)
         name = vocabulary["entries"][int(index)]["name"]
         safe_name = "".join(character if character.isalnum() else "_" for character in name)
-        Image.fromarray(overlay).save(directory / f"{rank:02d}_{safe_name}_attention.png")
+        for key in ("attention", "attention_stage3", "attention_stage4"):
+            if key not in arrays:
+                continue
+            attention = arrays[key][0, index]
+            relative = (attention - attention.min()) / max(float(np.ptp(attention)), 1e-8)
+            heatmap = Image.fromarray((relative * 255).astype(np.uint8)).resize(preview.size, Image.Resampling.BILINEAR)
+            strength = np.asarray(heatmap, dtype=np.float32) / 255
+            alpha = 0.55 * strength[:, :, None]
+            red = np.zeros_like(rgb)
+            red[:, :, 0] = 255
+            overlay = ((1 - alpha) * rgb + alpha * red).astype(np.uint8)
+            target = directory if key == "attention" else directory / key
+            target.mkdir(parents=True, exist_ok=True)
+            Image.fromarray(overlay).save(target / f"{rank:02d}_{safe_name}_attention.png")
     return summaries
 
 
@@ -58,6 +66,8 @@ def main():
     parser.add_argument("--device", choices=("auto", "cuda", "cpu"), default="auto")
     parser.add_argument("--save-attention", action="store_true")
     parser.add_argument("--top-k", type=int, default=10)
+    parser.add_argument("--depth-anything-repo", type=Path, help="V2: official pinned Depth Anything source")
+    parser.add_argument("--depth-checkpoint", type=Path, help="V2: same frozen Depth Anything weights used for training")
     parser.add_argument("--total-mass-grams", type=float, help="Optional known mass for composition-only analysis")
     args = parser.parse_args()
     if args.top_k < 1:
@@ -69,12 +79,30 @@ def main():
     device = resolve_device(args.device)
     checkpoint = load_checkpoint(args.checkpoint, "cpu")
     vocabulary = checkpoint["vocabulary"]
-    model = model_from_checkpoint(checkpoint, device)
     with Image.open(args.image) as source:
         image = ImageOps.exif_transpose(source).convert("RGB")
-    tensor = image_transforms()(image).unsqueeze(0)
+    depth = None
+    if checkpoint["model_type"] == MODEL_TYPE_V2:
+        if args.depth_anything_repo is None or args.depth_checkpoint is None:
+            parser.error("V2 RGB inference requires --depth-anything-repo and --depth-checkpoint")
+        from ingredient_mass.depth import FrozenDepthAnything, rgb_crop, paired_tensors
+        crop = rgb_crop(image)
+        predictor = FrozenDepthAnything(checkpoint["config"], args.depth_anything_repo, args.depth_checkpoint, device)
+        # Match the float16 map precision used by the training cache.
+        tensor, depth = paired_tensors(crop, predictor.predict(crop).astype(np.float16))
+        tensor, depth = tensor.unsqueeze(0), depth.unsqueeze(0)
+        # Free the frozen predictor before moving ConvNeXt to CUDA.
+        del predictor
+        if device.type == "cuda":
+            torch.cuda.empty_cache()
+    else:
+        tensor = image_transforms()(image).unsqueeze(0)
+    model = model_from_checkpoint(checkpoint, device)
     with torch.inference_mode():
-        outputs = model(tensor.to(device), return_attention=args.save_attention)
+        if depth is None:
+            outputs = model(tensor.to(device), return_attention=args.save_attention)
+        else:
+            outputs = model(tensor.to(device), depth=depth.to(device), return_attention=args.save_attention)
     predicted_mass = float(outputs["total_mass"].item())
     total_mass = float(args.total_mass_grams) if args.total_mass_grams is not None else predicted_mass
     shares = outputs["shares"][0].cpu().numpy()
@@ -93,9 +121,14 @@ def main():
         "predicted_total_mass_grams": predicted_mass, "used_total_mass_grams": total_mass,
         "mass_source": "user" if args.total_mass_grams is not None else "model",
         "presence_threshold": threshold, "ingredients": ingredients,
+        "model_type": checkpoint["model_type"],
         "nutrition": {name: float(value) for name, value in zip(vocabulary["nutrient_order"], nutrients)},
         "warning": "Nutrition uses all classes, not just the printed top-k. Attention is not segmentation or proof of ingredient presence; invisible ingredients may be inferred from context.",
     }
+    if depth is not None:
+        report["depth"] = {"source": "estimated_from_rgb", "relative_not_metric": True,
+                           "encoder": checkpoint["config"]["depth"]["encoder"],
+                           "checkpoint_sha256": checkpoint["config"]["depth_checkpoint_sha256"]}
     output_dir = args.output_dir / args.image.stem
     output_dir.mkdir(parents=True, exist_ok=True)
     if args.save_attention:
