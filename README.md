@@ -1,13 +1,23 @@
 # Estimación de ingredientes y masa con bajo cómputo
 
+## V4: cabezales especializados y diagnóstico p × c
+
+Nueva variante aislada, sin modificar checkpoints/configs/notebooks V2/V3.
+Ver [diagnóstico real de V3](DIAGNOSTICO_GATE_V3.md),
+[arquitectura V4](ARQUITECTURA_QUERY2LABEL_V4.md) y
+[Colab V4](COLAB_QUERY2LABEL_V4.md).
+El notebook `COLAB_QUERY2LABEL_V4.ipynb` deja entrenamiento y test desactivados.
+
 ## V3: gramos condicionales y split agrupado provisional
 
 Variante experimental separada de V2: BCE ponderada, cantidades supervisadas
 en positivos, penalización de gramos falsos, RGB completo 320×320, fusión
 residual de profundidad y scheduler warmup/cosine. La masa total deriva de
-sumar ingredientes. Todavía no se entrenó ni se demostró mejora de métricas.
+sumar ingredientes. Ya se entrenó; el diagnóstico de validación de época 39
+está documentado en [DIAGNOSTICO_GATE_V3.md](DIAGNOSTICO_GATE_V3.md). No atribuir
+comparaciones históricas con V2 solo a arquitectura: cambiaron split y vocabulario.
 
-- [Notebook Colab V3](COLAB_QUERY2LABEL_V3.ipynb), con operaciones desactivadas.
+- [Notebook Colab V3](COLAB_QUERY2LABEL_V3.ipynb), conservar su copia ejecutada.
 - [Guía Colab, Git, Drive y preservación de V2](COLAB_QUERY2LABEL_V3.md).
 - [Arquitectura y pérdidas V3](ARQUITECTURA_QUERY2LABEL_V3.md).
 

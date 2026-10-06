@@ -16,6 +16,7 @@ from torch.nn import functional as F
 from torch.utils.data import Dataset
 
 from .data import vectorize_record
+from .spatial_model import CONDITIONAL_MODEL_TYPES
 
 
 DEPTH_MODEL_CONFIGS = {
@@ -39,7 +40,7 @@ def validate_depth_config(config):
         raise ValueError("V2 requires frozen Depth Anything V2 relative-depth preprocessing")
     if depth.get("encoder") not in DEPTH_MODEL_CONFIGS:
         raise ValueError("Supported Depth Anything V2 encoders: vits, vitb, vitl")
-    v3 = config.get("model_type") == "convnext_small_query2label_conditional_mass_v3"
+    v3 = config.get("model_type") in CONDITIONAL_MODEL_TYPES
     geometry = "rgb_letterbox_320_v3" if v3 else "rgb_crop_230_224_v1"
     if v3 and int(config.get("image_size", 0)) != 320:
         raise ValueError("V3 geometry currently requires image_size=320")
@@ -51,7 +52,7 @@ def validate_depth_config(config):
 
 
 def image_size(config=None):
-    return 320 if config and config.get("model_type") == "convnext_small_query2label_conditional_mass_v3" else 224
+    return 320 if config and config.get("model_type") in CONDITIONAL_MODEL_TYPES else 224
 
 
 def rgb_crop(image, config=None):

@@ -14,7 +14,7 @@ sys.path.insert(0, str(PROJECT_ROOT / "src"))
 from ingredient_mass.data import nutrient_matrix, write_json
 from ingredient_mass.features import resolve_device
 from ingredient_mass.model import load_checkpoint
-from ingredient_mass.spatial_model import MODEL_TYPE_V2, MODEL_TYPE_V3, image_transforms, model_from_checkpoint
+from ingredient_mass.spatial_model import DEPTH_MODEL_TYPES, CONDITIONAL_MODEL_TYPES, MODEL_TYPE_V4, image_transforms, model_from_checkpoint
 
 
 def save_intermediates(output_dir, tensor, outputs, vocabulary, top_k):
@@ -82,7 +82,7 @@ def main():
     with Image.open(args.image) as source:
         image = ImageOps.exif_transpose(source).convert("RGB")
     depth = None
-    if checkpoint["model_type"] in (MODEL_TYPE_V2, MODEL_TYPE_V3):
+    if checkpoint["model_type"] in DEPTH_MODEL_TYPES:
         if args.depth_anything_repo is None or args.depth_checkpoint is None:
             parser.error("Multiscale RGB inference requires --depth-anything-repo and --depth-checkpoint")
         from ingredient_mass.depth import FrozenDepthAnything, rgb_crop, paired_tensors
@@ -125,16 +125,24 @@ def main():
         "nutrition": {name: float(value) for name, value in zip(vocabulary["nutrient_order"], nutrients)},
         "warning": "Nutrition uses all classes, not just the printed top-k. Attention is not segmentation or proof of ingredient presence; invisible ingredients may be inferred from context.",
     }
+    if "conditional_grams" in outputs:
+        conditional = outputs["conditional_grams"][0].cpu().numpy()
+        for ingredient, index in zip(ingredients, order):
+            ingredient["conditional_grams"] = float(conditional[index])
+    if "auxiliary_total_mass" in outputs:
+        report["auxiliary_total_mass_grams"] = float(outputs["auxiliary_total_mass"].item())
+        report["auxiliary_mass_used_for_predictions"] = False
     if depth is not None:
         report["depth"] = {"source": "estimated_from_rgb", "relative_not_metric": True,
                            "encoder": checkpoint["config"]["depth"]["encoder"],
                            "checkpoint_sha256": checkpoint["config"]["depth_checkpoint_sha256"]}
     output_dir = args.output_dir / args.image.stem
-    if checkpoint["model_type"] == MODEL_TYPE_V3 and "v2" in {part.lower() for part in output_dir.parts}:
-        raise ValueError("V3 predictions must not write inside the v2 namespace")
-    if checkpoint["model_type"] == MODEL_TYPE_V3 and (output_dir / "prediction.json").is_file():
+    forbidden = {"v2", "v3"} if checkpoint["model_type"] == MODEL_TYPE_V4 else {"v2"}
+    if checkpoint["model_type"] in CONDITIONAL_MODEL_TYPES and forbidden & {part.lower() for part in output_dir.parts}:
+        raise ValueError("Predictions must not write inside an earlier version's namespace")
+    if checkpoint["model_type"] in CONDITIONAL_MODEL_TYPES and (output_dir / "prediction.json").is_file():
         previous = json.loads((output_dir / "prediction.json").read_text(encoding="utf-8"))
-        if previous.get("model_type") != MODEL_TYPE_V3:
+        if previous.get("model_type") != checkpoint["model_type"]:
             raise ValueError("Prediction directory belongs to another model; choose a new output-dir")
     output_dir.mkdir(parents=True, exist_ok=True)
     if args.save_attention:

@@ -1,4 +1,4 @@
-"""Train spatial Q2L v1/v2/v3 with partial ConvNeXt adjustment; never train on test."""
+"""Train spatial Q2L v1/v2/v3/v4 with partial ConvNeXt adjustment; never train on test."""
 import argparse
 import csv
 import json
@@ -15,10 +15,10 @@ sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
 from ingredient_mass.data import nutrient_matrix, write_json
 from ingredient_mass.features import resolve_device
-from ingredient_mass.image_training import load_prepared, make_loader, positive_class_weights, run_epoch, prepared_fingerprint
+from ingredient_mass.image_training import load_prepared, make_loader, positive_class_weights, run_epoch, prepared_fingerprint, save_predictions, auxiliary_mass_metrics
 from ingredient_mass.metrics import full_metrics
 from ingredient_mass.model import load_checkpoint, mean_training_mass
-from ingredient_mass.spatial_model import MODEL_TYPE_V2, MODEL_TYPE_V3, create_image_model
+from ingredient_mass.spatial_model import DEPTH_MODEL_TYPES, CONDITIONAL_MODEL_TYPES, MODEL_TYPE_V3, MODEL_TYPE_V4, create_image_model
 
 
 def parse_args():
@@ -28,7 +28,7 @@ def parse_args():
     parser.add_argument("--processed-dir", type=Path, default=PROJECT_ROOT / "data/processed_100")
     parser.add_argument("--output-dir", type=Path)
     parser.add_argument("--torch-cache", type=Path, default=PROJECT_ROOT / "cache/torch")
-    parser.add_argument("--depth-cache", type=Path, help="V2/V3 aligned RGB-estimated depth cache; do not mix 224/320 geometry")
+    parser.add_argument("--depth-cache", type=Path, help="V2/V3/V4 aligned RGB-estimated depth cache; do not mix 224/320 geometry")
     parser.add_argument("--device", choices=("auto", "cuda", "cpu"), default="cuda")
     parser.add_argument("--workers", type=int, default=2)
     parser.add_argument("--presence-loss", choices=("asl", "bce"))
@@ -94,7 +94,7 @@ def main():
         value = getattr(args, key)
         if value is not None:
             config[key] = value
-    expected_training = "stages_2_4" if config.get("model_type") in (MODEL_TYPE_V2, MODEL_TYPE_V3) else "last_stage"
+    expected_training = "stages_2_4" if config.get("model_type") in DEPTH_MODEL_TYPES else "last_stage"
     if config.get("encoder_training") != expected_training:
         raise ValueError(f"This model requires encoder_training={expected_training}")
     if config.get("shared_dims") != [384, 192]:
@@ -109,14 +109,14 @@ def main():
     config["mass_scale"] = mean_training_mass(
         record["total_mass"] for record in records if record["split"] == "train"
     )
-    if config.get("model_type") == MODEL_TYPE_V3 or config.get("split_policy") == "grouped_provisional":
+    if config.get("model_type") in CONDITIONAL_MODEL_TYPES or config.get("split_policy") == "grouped_provisional":
         config["prepared_fingerprint"] = prepared_fingerprint(args.processed_dir)
-    if config.get("model_type") in (MODEL_TYPE_V2, MODEL_TYPE_V3):
+    if config.get("model_type") in DEPTH_MODEL_TYPES:
         from ingredient_mass.depth import validate_depth_cache
         manifest = validate_depth_cache(args.depth_cache, records, config, args.dataset_root,
-                                        verify_sources=config.get("model_type") == MODEL_TYPE_V3)
+                                        verify_sources=config.get("model_type") in CONDITIONAL_MODEL_TYPES)
         config["depth_checkpoint_sha256"] = manifest["checkpoint_sha256"]
-        if config.get("model_type") == MODEL_TYPE_V3:
+        if config.get("model_type") in CONDITIONAL_MODEL_TYPES:
             from ingredient_mass.depth import file_sha256
             config["depth_manifest_sha256"] = file_sha256(args.depth_cache / "manifest.json")
     if args.check_data:
@@ -124,10 +124,12 @@ def main():
                           "splits": {split: sum(r["split"] == split for r in records)
                                      for split in ("train", "validation", "test")}}, indent=2))
         return
-    default_run = "query2label_100_v3_bce" if config["model_type"] == MODEL_TYPE_V3 else "query2label_100_asl"
+    default_run = {MODEL_TYPE_V3: "query2label_100_v3_bce", MODEL_TYPE_V4: "query2label_100_v4_specialized"}.get(config["model_type"], "query2label_100_asl")
     output_dir = (args.output_dir or PROJECT_ROOT / "artifacts" / default_run).resolve()
     if config["model_type"] == MODEL_TYPE_V3 and "v2" in {part.lower() for part in output_dir.parts}:
         raise ValueError("V3 training must not write inside the v2 namespace")
+    if config["model_type"] == MODEL_TYPE_V4 and {"v2", "v3"} & {part.lower() for part in output_dir.parts}:
+        raise ValueError("V4 training must use a new namespace, never v2/v3")
     if output_dir.exists() and any(output_dir.iterdir()) and args.resume is None:
         raise FileExistsError("Output directory is not empty; use a new directory or --resume last.pt")
     device = resolve_device(args.device)
@@ -148,7 +150,7 @@ def main():
                                pretrained=resumed is None, torch_cache=args.torch_cache).to(device)
     if resumed:
         model.load_state_dict(resumed["model_state"], strict=True)
-    elif config["model_type"] == MODEL_TYPE_V3:
+    elif config["model_type"] in CONDITIONAL_MODEL_TYPES:
         model.initialize_from_train(records, vocabulary)
     train_loader = make_loader(records, vocabulary, args.dataset_root, "train", int(config["batch_size"]),
                                args.workers, device, training=True, seed=seed,
@@ -189,9 +191,11 @@ def main():
     with history_path.open("a" if resumed else "w", newline="", encoding="utf-8") as history:
         fields = ["epoch", "encoder_trainable", "seconds", "train_loss", "validation_loss", "micro_f1",
                   "ingredient_mass_l1_per_plate", "total_mass_mae", "calorie_mae"]
-        if config["model_type"] == MODEL_TYPE_V3:
+        if config["model_type"] in CONDITIONAL_MODEL_TYPES:
             fields += ["macro_f1", "false_ingredient_mass", "lr_heads", "lr_encoder"]
             fields += [f"{split}_{key}" for split in ("train", "validation") for key in config["loss_weights"]]
+        if config["model_type"] == MODEL_TYPE_V4 and config.get("auxiliary_total_mass", True):
+            fields += ["auxiliary_total_mass_mae", "mass_consistency_gap_mae"]
         writer = csv.DictWriter(history, fieldnames=fields)
         if not resumed or not has_history:
             writer.writeheader()
@@ -207,6 +211,7 @@ def main():
                 model, validation_loader, matrix, positive_weights, config, device, description=f"Validation {epoch}")
             metrics = full_metrics(predictions["presence"], predictions["shares"], predictions["mass"],
                                    targets, matrix_np, float(config["presence_threshold"]))
+            metrics.update(auxiliary_mass_metrics(predictions, targets))
             quantities = metrics["end_to_end_lightweight_mass"]
             row = {
                 "epoch": epoch, "encoder_trainable": encoder_enabled,
@@ -217,12 +222,15 @@ def main():
                 "total_mass_mae": quantities["total_mass_mae_grams"],
                 "calorie_mae": quantities["nutrients"]["calories"]["mae"],
             }
-            if config["model_type"] == MODEL_TYPE_V3:
+            if config["model_type"] in CONDITIONAL_MODEL_TYPES:
                 row.update(macro_f1=metrics["ingredient_recognition"]["macro_f1"],
                            false_ingredient_mass=quantities["false_ingredient_mass_per_plate_grams"],
                            lr_heads=optimizer.param_groups[0]["lr"], lr_encoder=optimizer.param_groups[1]["lr"])
                 row.update({f"{split}_{key}": parts[key] for split, parts in (("train", train_losses), ("validation", validation_losses))
                             for key in config["loss_weights"]})
+            if "auxiliary_total_mass" in metrics:
+                row.update(auxiliary_total_mass_mae=metrics["auxiliary_total_mass"]["mae_grams"],
+                           mass_consistency_gap_mae=metrics["auxiliary_total_mass"]["consistency_gap_mae_grams"])
             writer.writerow(row)
             history.flush()
             improved = row[selection] > best if selection == "micro_f1" else row[selection] < best
@@ -237,6 +245,13 @@ def main():
             }
             if improved:
                 torch.save(payload, output_dir / "best.pt")
+                if config["model_type"] == MODEL_TYPE_V4:
+                    save_predictions(output_dir / "best_validation_predictions.npz", predictions, targets, vocabulary)
+                    write_json(output_dir / "best_validation_details.json", {
+                        "split": "validation", "epoch": epoch, "model_type": config["model_type"],
+                        "threshold": config["presence_threshold"], "prepared_fingerprint": config["prepared_fingerprint"],
+                        "selected_by": selection, "metrics": metrics,
+                    })
             if scheduler is not None:
                 scheduler.step()
             # Save complete state every epoch, suitable for Colab reconnect/resume.

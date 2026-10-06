@@ -8,7 +8,7 @@ import torch
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT / "src"))
-from ingredient_mass.spatial_model import MODEL_TYPE_V2, MODEL_TYPE_V3, create_image_model
+from ingredient_mass.spatial_model import DEPTH_MODEL_TYPES, create_image_model
 
 
 def main():
@@ -20,7 +20,7 @@ def main():
     model = create_image_model(int(config["top_k"]), config, pretrained=False).eval()
     size = int(config.get("image_size", 224))
     with torch.inference_mode():
-        kwargs = {"depth": torch.zeros(1, 1, size, size)} if config["model_type"] in (MODEL_TYPE_V2, MODEL_TYPE_V3) else {}
+        kwargs = {"depth": torch.zeros(1, 1, size, size)} if config["model_type"] in DEPTH_MODEL_TYPES else {}
         outputs = model(torch.zeros(1, 3, size, size), return_attention=True, **kwargs)
     model.set_encoder_trainable(True)
     print(json.dumps({
