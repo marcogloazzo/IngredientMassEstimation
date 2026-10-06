@@ -1,4 +1,4 @@
-"""Train spatial Q2L v1/v2 with partial ConvNeXt adjustment; never train on test."""
+"""Train spatial Q2L v1/v2/v3 with partial ConvNeXt adjustment; never train on test."""
 import argparse
 import csv
 import json
@@ -15,10 +15,10 @@ sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
 from ingredient_mass.data import nutrient_matrix, write_json
 from ingredient_mass.features import resolve_device
-from ingredient_mass.image_training import load_prepared, make_loader, positive_class_weights, run_epoch
+from ingredient_mass.image_training import load_prepared, make_loader, positive_class_weights, run_epoch, prepared_fingerprint
 from ingredient_mass.metrics import full_metrics
 from ingredient_mass.model import load_checkpoint, mean_training_mass
-from ingredient_mass.spatial_model import MODEL_TYPE_V2, create_image_model
+from ingredient_mass.spatial_model import MODEL_TYPE_V2, MODEL_TYPE_V3, create_image_model
 
 
 def parse_args():
@@ -26,9 +26,9 @@ def parse_args():
     parser.add_argument("--config", type=Path, default=PROJECT_ROOT / "config/query2label_100.json")
     parser.add_argument("--dataset-root", type=Path, default=PROJECT_ROOT / "data/raw/nutrition5k_dataset")
     parser.add_argument("--processed-dir", type=Path, default=PROJECT_ROOT / "data/processed_100")
-    parser.add_argument("--output-dir", type=Path, default=PROJECT_ROOT / "artifacts/query2label_100_asl")
+    parser.add_argument("--output-dir", type=Path)
     parser.add_argument("--torch-cache", type=Path, default=PROJECT_ROOT / "cache/torch")
-    parser.add_argument("--depth-cache", type=Path, help="V2 aligned relative-depth cache generated from RGB")
+    parser.add_argument("--depth-cache", type=Path, help="V2/V3 aligned RGB-estimated depth cache; do not mix 224/320 geometry")
     parser.add_argument("--device", choices=("auto", "cuda", "cpu"), default="cuda")
     parser.add_argument("--workers", type=int, default=2)
     parser.add_argument("--presence-loss", choices=("asl", "bce"))
@@ -67,6 +67,26 @@ def restore_scaler(scaler, state):
         scaler.load_state_dict(state)
 
 
+def make_scheduler(optimizer, config):
+    settings = config.get("scheduler")
+    if not settings:
+        return None
+    if settings["name"] != "warmup_cosine":
+        raise ValueError("Unknown LR scheduler")
+    import math
+    warmup, horizon = int(settings["warmup_epochs"]), int(settings["total_epochs"])
+    minimum = float(settings["min_factor"])
+    if not 0 <= warmup < horizon or not 0 < minimum <= 1:
+        raise ValueError("Invalid warmup/cosine settings")
+
+    def factor(step):
+        if step < warmup:
+            return (step + 1) / max(warmup, 1)
+        progress = min(1., (step - warmup) / (horizon - warmup))
+        return minimum + (1 - minimum) * (1 + math.cos(math.pi * progress)) / 2
+    return torch.optim.lr_scheduler.LambdaLR(optimizer, factor)
+
+
 def main():
     args = parse_args()
     config = json.loads(args.config.read_text(encoding="utf-8"))
@@ -74,7 +94,7 @@ def main():
         value = getattr(args, key)
         if value is not None:
             config[key] = value
-    expected_training = "stages_2_4" if config.get("model_type") == MODEL_TYPE_V2 else "last_stage"
+    expected_training = "stages_2_4" if config.get("model_type") in (MODEL_TYPE_V2, MODEL_TYPE_V3) else "last_stage"
     if config.get("encoder_training") != expected_training:
         raise ValueError(f"This model requires encoder_training={expected_training}")
     if config.get("shared_dims") != [384, 192]:
@@ -89,16 +109,25 @@ def main():
     config["mass_scale"] = mean_training_mass(
         record["total_mass"] for record in records if record["split"] == "train"
     )
-    if config.get("model_type") == MODEL_TYPE_V2:
+    if config.get("model_type") == MODEL_TYPE_V3 or config.get("split_policy") == "grouped_provisional":
+        config["prepared_fingerprint"] = prepared_fingerprint(args.processed_dir)
+    if config.get("model_type") in (MODEL_TYPE_V2, MODEL_TYPE_V3):
         from ingredient_mass.depth import validate_depth_cache
-        manifest = validate_depth_cache(args.depth_cache, records, config)
+        manifest = validate_depth_cache(args.depth_cache, records, config, args.dataset_root,
+                                        verify_sources=config.get("model_type") == MODEL_TYPE_V3)
         config["depth_checkpoint_sha256"] = manifest["checkpoint_sha256"]
+        if config.get("model_type") == MODEL_TYPE_V3:
+            from ingredient_mass.depth import file_sha256
+            config["depth_manifest_sha256"] = file_sha256(args.depth_cache / "manifest.json")
     if args.check_data:
         print(json.dumps({"config": config, "classes": len(vocabulary["entries"]),
                           "splits": {split: sum(r["split"] == split for r in records)
                                      for split in ("train", "validation", "test")}}, indent=2))
         return
-    output_dir = args.output_dir.resolve()
+    default_run = "query2label_100_v3_bce" if config["model_type"] == MODEL_TYPE_V3 else "query2label_100_asl"
+    output_dir = (args.output_dir or PROJECT_ROOT / "artifacts" / default_run).resolve()
+    if config["model_type"] == MODEL_TYPE_V3 and "v2" in {part.lower() for part in output_dir.parts}:
+        raise ValueError("V3 training must not write inside the v2 namespace")
     if output_dir.exists() and any(output_dir.iterdir()) and args.resume is None:
         raise FileExistsError("Output directory is not empty; use a new directory or --resume last.pt")
     device = resolve_device(args.device)
@@ -119,6 +148,8 @@ def main():
                                pretrained=resumed is None, torch_cache=args.torch_cache).to(device)
     if resumed:
         model.load_state_dict(resumed["model_state"], strict=True)
+    elif config["model_type"] == MODEL_TYPE_V3:
+        model.initialize_from_train(records, vocabulary)
     train_loader = make_loader(records, vocabulary, args.dataset_root, "train", int(config["batch_size"]),
                                args.workers, device, training=True, seed=seed,
                                config=config, depth_cache=args.depth_cache)
@@ -131,6 +162,7 @@ def main():
         {"params": list(model.heads.parameters()), "lr": float(config["learning_rate"])},
         {"params": list(model.encoder_parameters()), "lr": float(config["encoder_learning_rate"])},
     ], weight_decay=float(config["weight_decay"]))
+    scheduler = make_scheduler(optimizer, config)
     scaler = torch.amp.GradScaler("cuda", enabled=device.type == "cuda" and bool(config.get("amp", True)))
     start_epoch, stale = 1, 0
     selection = config.get("selection_metric", "ingredient_mass_l1_per_plate")
@@ -139,6 +171,10 @@ def main():
     best = -float("inf") if selection == "micro_f1" else float("inf")
     if resumed:
         optimizer.load_state_dict(resumed["optimizer_state"])
+        if scheduler is not None:
+            if not resumed.get("scheduler_state"):
+                raise ValueError("V3 resume requires the saved LR scheduler state")
+            scheduler.load_state_dict(resumed["scheduler_state"])
         restore_scaler(scaler, resumed["scaler_state"])
         start_epoch, stale, best = resumed["epoch"] + 1, resumed["stale_epochs"], resumed["best_value"]
         restore_rng(resumed["rng_state"], train_loader)
@@ -153,6 +189,9 @@ def main():
     with history_path.open("a" if resumed else "w", newline="", encoding="utf-8") as history:
         fields = ["epoch", "encoder_trainable", "seconds", "train_loss", "validation_loss", "micro_f1",
                   "ingredient_mass_l1_per_plate", "total_mass_mae", "calorie_mae"]
+        if config["model_type"] == MODEL_TYPE_V3:
+            fields += ["macro_f1", "false_ingredient_mass", "lr_heads", "lr_encoder"]
+            fields += [f"{split}_{key}" for split in ("train", "validation") for key in config["loss_weights"]]
         writer = csv.DictWriter(history, fieldnames=fields)
         if not resumed or not has_history:
             writer.writeheader()
@@ -178,6 +217,12 @@ def main():
                 "total_mass_mae": quantities["total_mass_mae_grams"],
                 "calorie_mae": quantities["nutrients"]["calories"]["mae"],
             }
+            if config["model_type"] == MODEL_TYPE_V3:
+                row.update(macro_f1=metrics["ingredient_recognition"]["macro_f1"],
+                           false_ingredient_mass=quantities["false_ingredient_mass_per_plate_grams"],
+                           lr_heads=optimizer.param_groups[0]["lr"], lr_encoder=optimizer.param_groups[1]["lr"])
+                row.update({f"{split}_{key}": parts[key] for split, parts in (("train", train_losses), ("validation", validation_losses))
+                            for key in config["loss_weights"]})
             writer.writerow(row)
             history.flush()
             improved = row[selection] > best if selection == "micro_f1" else row[selection] < best
@@ -192,9 +237,13 @@ def main():
             }
             if improved:
                 torch.save(payload, output_dir / "best.pt")
+            if scheduler is not None:
+                scheduler.step()
             # Save complete state every epoch, suitable for Colab reconnect/resume.
             payload.update({"optimizer_state": optimizer.state_dict(), "scaler_state": scaler.state_dict(),
                             "stale_epochs": stale, "rng_state": capture_rng(train_loader)})
+            if scheduler is not None:
+                payload["scheduler_state"] = scheduler.state_dict()
             temporary = output_dir / "last.tmp.pt"
             torch.save(payload, temporary)
             temporary.replace(output_dir / "last.pt")

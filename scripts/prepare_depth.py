@@ -11,7 +11,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT / "src"))
 from ingredient_mass.data import write_json
 from ingredient_mass.depth import (FrozenDepthAnything, depth_cache_path, file_sha256,
-                                   open_rgb_crop, validate_depth_cache, validate_depth_config)
+                                   open_rgb_crop, validate_depth_cache, validate_depth_config, image_size)
 from ingredient_mass.features import resolve_device
 from ingredient_mass.image_training import load_prepared
 
@@ -28,6 +28,8 @@ def main():
     parser.add_argument("--check-cache", action="store_true", help="Verify maps/sources only; no depth model loading")
     args = parser.parse_args()
     config = json.loads(args.config.read_text(encoding="utf-8"))
+    if config.get("model_type") == "convnext_small_query2label_conditional_mass_v3" and "v2" in {part.lower() for part in args.depth_cache.parts}:
+        raise ValueError("V3 needs a separate 320x320 depth cache, never the v2 namespace")
     validate_depth_config(config)
     records, _ = load_prepared(args.processed_dir, args.dataset_root, config)
     if args.check_cache:
@@ -66,20 +68,24 @@ def main():
             # Do not silently reuse a corrupt or incompatible map.
             try:
                 values = np.load(path, allow_pickle=False)
-                valid = values.shape == (224, 224) and values.dtype == np.float16 and np.isfinite(values).all()
+                valid = values.shape == (image_size(config), image_size(config)) and values.dtype == np.float16 and np.isfinite(values).all()
                 valid = valid and values.min() >= 0 and values.max() <= 1
+                if image_size(config) == 320:
+                    valid = valid and entry.get("map_sha256") == file_sha256(path)
             except (ValueError, OSError):
                 valid = False
             if valid:
                 continue
-        values = predictor.predict(open_rgb_crop(rgb_path))
+        values = predictor.predict(open_rgb_crop(rgb_path, config))
         temporary = path.with_suffix(".tmp.npy")
         np.save(temporary, values.astype(np.float16), allow_pickle=False)
         temporary.replace(path)
         manifest["entries"][record["dish_id"]] = {"image": record["image"], "image_sha256": fingerprint}
+        if image_size(config) == 320:
+            manifest["entries"][record["dish_id"]]["map_sha256"] = file_sha256(path)
         save_manifest()
     validate_depth_cache(cache, records, config)
-    print(f"Complete depth cache: {cache}; {len(records)} maps, float16, 224x224")
+    print(f"Complete depth cache: {cache}; {len(records)} maps, float16, {image_size(config)}x{image_size(config)}")
 
 
 if __name__ == "__main__":

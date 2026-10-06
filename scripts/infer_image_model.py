@@ -14,7 +14,7 @@ sys.path.insert(0, str(PROJECT_ROOT / "src"))
 from ingredient_mass.data import nutrient_matrix, write_json
 from ingredient_mass.features import resolve_device
 from ingredient_mass.model import load_checkpoint
-from ingredient_mass.spatial_model import MODEL_TYPE_V2, image_transforms, model_from_checkpoint
+from ingredient_mass.spatial_model import MODEL_TYPE_V2, MODEL_TYPE_V3, image_transforms, model_from_checkpoint
 
 
 def save_intermediates(output_dir, tensor, outputs, vocabulary, top_k):
@@ -66,8 +66,8 @@ def main():
     parser.add_argument("--device", choices=("auto", "cuda", "cpu"), default="auto")
     parser.add_argument("--save-attention", action="store_true")
     parser.add_argument("--top-k", type=int, default=10)
-    parser.add_argument("--depth-anything-repo", type=Path, help="V2: official pinned Depth Anything source")
-    parser.add_argument("--depth-checkpoint", type=Path, help="V2: same frozen Depth Anything weights used for training")
+    parser.add_argument("--depth-anything-repo", type=Path, help="V2/V3: official pinned Depth Anything source")
+    parser.add_argument("--depth-checkpoint", type=Path, help="V2/V3: same frozen Depth Anything weights used for training")
     parser.add_argument("--total-mass-grams", type=float, help="Optional known mass for composition-only analysis")
     args = parser.parse_args()
     if args.top_k < 1:
@@ -82,14 +82,14 @@ def main():
     with Image.open(args.image) as source:
         image = ImageOps.exif_transpose(source).convert("RGB")
     depth = None
-    if checkpoint["model_type"] == MODEL_TYPE_V2:
+    if checkpoint["model_type"] in (MODEL_TYPE_V2, MODEL_TYPE_V3):
         if args.depth_anything_repo is None or args.depth_checkpoint is None:
-            parser.error("V2 RGB inference requires --depth-anything-repo and --depth-checkpoint")
+            parser.error("Multiscale RGB inference requires --depth-anything-repo and --depth-checkpoint")
         from ingredient_mass.depth import FrozenDepthAnything, rgb_crop, paired_tensors
-        crop = rgb_crop(image)
+        crop = rgb_crop(image, checkpoint["config"])
         predictor = FrozenDepthAnything(checkpoint["config"], args.depth_anything_repo, args.depth_checkpoint, device)
         # Match the float16 map precision used by the training cache.
-        tensor, depth = paired_tensors(crop, predictor.predict(crop).astype(np.float16))
+        tensor, depth = paired_tensors(crop, predictor.predict(crop).astype(np.float16), config=checkpoint["config"])
         tensor, depth = tensor.unsqueeze(0), depth.unsqueeze(0)
         # Free the frozen predictor before moving ConvNeXt to CUDA.
         del predictor
@@ -130,6 +130,12 @@ def main():
                            "encoder": checkpoint["config"]["depth"]["encoder"],
                            "checkpoint_sha256": checkpoint["config"]["depth_checkpoint_sha256"]}
     output_dir = args.output_dir / args.image.stem
+    if checkpoint["model_type"] == MODEL_TYPE_V3 and "v2" in {part.lower() for part in output_dir.parts}:
+        raise ValueError("V3 predictions must not write inside the v2 namespace")
+    if checkpoint["model_type"] == MODEL_TYPE_V3 and (output_dir / "prediction.json").is_file():
+        previous = json.loads((output_dir / "prediction.json").read_text(encoding="utf-8"))
+        if previous.get("model_type") != MODEL_TYPE_V3:
+            raise ValueError("Prediction directory belongs to another model; choose a new output-dir")
     output_dir.mkdir(parents=True, exist_ok=True)
     if args.save_attention:
         report["intermediate_shapes"] = save_intermediates(output_dir, tensor, outputs, vocabulary, args.top_k)

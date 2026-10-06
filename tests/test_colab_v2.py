@@ -13,22 +13,25 @@ NOTEBOOK = json.loads((ROOT / "COLAB_QUERY2LABEL_V2.ipynb").read_text(encoding="
 
 
 class ColabV2Tests(unittest.TestCase):
-    def test_cells_parse_and_expensive_operations_default_disabled(self):
+    def test_saved_cells_parse_and_expensive_controls_are_booleans(self):
         self.assertEqual(NOTEBOOK["nbformat"], 4)
         defaults = {}
         for cell in NOTEBOOK["cells"]:
             if cell["cell_type"] != "code":
                 continue
-            self.assertIsNone(cell["execution_count"])
-            self.assertEqual(cell["outputs"], [])
+            # V2 is a saved historical experiment, not a pristine template.
+            # Preserve its execution counts/results; V3's separate test asserts
+            # that the NEW notebook has disabled flags and empty outputs.
+            self.assertTrue(cell["execution_count"] is None or isinstance(cell["execution_count"], int))
+            self.assertIsInstance(cell["outputs"], list)
             tree = ast.parse("".join(cell["source"]))
             for node in tree.body:
                 if isinstance(node, ast.Assign) and isinstance(node.value, ast.Constant):
                     for target in node.targets:
                         if isinstance(target, ast.Name) and target.id.startswith("RUN_"):
                             defaults[target.id] = node.value.value
-        self.assertEqual(defaults, {name: False for name in (
-            "RUN_DEPTH_PREPARATION", "RUN_TRAINING", "RUN_CALIBRATION", "RUN_TEST", "RUN_INFERENCE")})
+        self.assertEqual(set(defaults), {"RUN_DEPTH_PREPARATION", "RUN_TRAINING", "RUN_CALIBRATION", "RUN_TEST", "RUN_INFERENCE"})
+        self.assertTrue(all(isinstance(value, bool) for value in defaults.values()))
 
     def extraction_functions(self, destination):
         source = next("".join(cell["source"]) for cell in NOTEBOOK["cells"]

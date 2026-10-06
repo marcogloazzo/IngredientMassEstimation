@@ -17,7 +17,8 @@ from torch.nn import functional as F
 
 MODEL_TYPE = "convnext_small_query2label"
 MODEL_TYPE_V2 = "convnext_small_query2label_multiscale_depth_v2"
-SUPPORTED_MODEL_TYPES = (MODEL_TYPE, MODEL_TYPE_V2)
+MODEL_TYPE_V3 = "convnext_small_query2label_conditional_mass_v3"
+SUPPORTED_MODEL_TYPES = (MODEL_TYPE, MODEL_TYPE_V2, MODEL_TYPE_V3)
 
 
 def position_encoding(height: int, width: int, dimension: int, device, dtype):
@@ -222,4 +223,7 @@ def create_image_model(ingredient_count, config, pretrained=True, torch_cache=No
     if model_type == MODEL_TYPE_V2:
         from .multiscale_model import ConvNeXtMultiscaleDepth
         return ConvNeXtMultiscaleDepth(ingredient_count, config, pretrained, torch_cache)
+    if model_type == MODEL_TYPE_V3:
+        from .conditional_model import ConvNeXtConditionalMass
+        return ConvNeXtConditionalMass(ingredient_count, config, pretrained, torch_cache)
     raise ValueError(f"Unsupported model type: {model_type}")

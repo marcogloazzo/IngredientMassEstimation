@@ -13,7 +13,12 @@ from tqdm import tqdm
 from .data import read_json, read_jsonl, vectorize_record
 from .features import PreparedImageDataset
 from .model import compute_loss
-from .spatial_model import SUPPORTED_MODEL_TYPES, MODEL_TYPE_V2, image_transforms
+from .spatial_model import SUPPORTED_MODEL_TYPES, MODEL_TYPE_V2, MODEL_TYPE_V3, image_transforms
+
+
+def prepared_fingerprint(processed_dir):
+    from .depth import file_sha256
+    return {name: file_sha256(Path(processed_dir) / name) for name in ("records.jsonl", "vocabulary.json")}
 
 
 def load_prepared(processed_dir: Path, dataset_root: Path, config: dict):
@@ -23,6 +28,24 @@ def load_prepared(processed_dir: Path, dataset_root: Path, config: dict):
         raise ValueError("Use the spatial ConvNeXt Small configuration")
     if len(vocabulary["entries"]) != int(config["top_k"]):
         raise ValueError("Vocabulary size differs from config top_k; prepare labels with this config")
+    if config.get("model_type") == MODEL_TYPE_V3 or config.get("split_policy") == "grouped_provisional":
+        summary = read_json(Path(processed_dir) / "summary.json")
+        if summary.get("mode") != "provisional" or config.get("accept_provisional_split") is not True:
+            raise ValueError("This configuration requires the explicitly accepted grouped provisional dataset")
+        if summary.get("official_test_preserved") is not True:
+            raise ValueError("Grouped dataset must preserve official test")
+        by_group = {}
+        if len({r["dish_id"] for r in records}) != len(records):
+            raise ValueError("Duplicate prepared dish IDs")
+        for record in records:
+            group = record.get("scan_group_id")
+            if not group:
+                raise ValueError("V3 records require scan_group_id")
+            if group in by_group and by_group[group] != record["split"]:
+                raise ValueError("Group leakage in V3 prepared records")
+            by_group[group] = record["split"]
+    if config.get("prepared_fingerprint") and prepared_fingerprint(processed_dir) != config["prepared_fingerprint"]:
+        raise ValueError("Prepared split/vocabulary changed since this checkpoint")
     missing = [record["image"] for record in records if not (dataset_root / record["image"]).is_file()]
     if missing:
         raise FileNotFoundError(f"{len(missing)} prepared RGB images missing; first: {missing[0]}")
@@ -34,11 +57,11 @@ def make_loader(records, vocabulary, dataset_root, split, batch_size, workers, d
     selected = [record for record in records if record["split"] == split]
     if not selected:
         raise ValueError(f"No records for split {split}")
-    if config and config.get("model_type") == MODEL_TYPE_V2:
+    if config and config.get("model_type") in (MODEL_TYPE_V2, MODEL_TYPE_V3):
         from .depth import PairedDepthDataset
         if depth_cache is None:
             raise ValueError("V2 loader requires --depth-cache")
-        dataset = PairedDepthDataset(selected, dataset_root, vocabulary, depth_cache, training)
+        dataset = PairedDepthDataset(selected, dataset_root, vocabulary, depth_cache, training, config)
     else:
         dataset = PreparedImageDataset(selected, dataset_root, vocabulary, image_transforms(training))
     generator = torch.Generator().manual_seed(seed)
@@ -70,6 +93,8 @@ def run_epoch(model, loader, matrix, positive_weights, config, device,
     if training:
         optimizer.zero_grad(set_to_none=True)
     collected = {key: [] for key in ("presence", "shares", "mass")}
+    if config.get("model_type") == MODEL_TYPE_V3:
+        collected["conditional_grams"] = []
     targets = {key: [] for key in ("presence", "shares", "masses", "total_mass", "nutrients", "dish_ids")}
     totals, sample_count = {}, 0
     progress = tqdm(loader, desc=description, unit="batch", file=sys.stdout, mininterval=1)
@@ -84,14 +109,19 @@ def run_epoch(model, loader, matrix, positive_weights, config, device,
                 else:
                     outputs = model(images)
             # All loss arithmetic outside autocast, using FP32 model predictions.
-            loss, parts = compute_loss(
-                outputs, target["presence"], target["shares"], target["total_mass"],
-                target["nutrients"], matrix, positive_weights, config["loss_weights"],
-                presence_loss_name=config.get("presence_loss", "asl"),
-                asl_config=config.get("asl"), masses_target=target["masses"],
-                ingredient_mass_scale=float(config.get("ingredient_mass_scale", 300)),
-                mass_scale=float(config.get("mass_scale", 300)),
-            )
+            if config.get("model_type") == MODEL_TYPE_V3:
+                from .conditional_model import conditional_mass_loss
+                loss, parts = conditional_mass_loss(outputs, target["presence"], target["masses"],
+                                                     target["total_mass"], target["nutrients"], matrix, positive_weights, config)
+            else:
+                loss, parts = compute_loss(
+                    outputs, target["presence"], target["shares"], target["total_mass"],
+                    target["nutrients"], matrix, positive_weights, config["loss_weights"],
+                    presence_loss_name=config.get("presence_loss", "asl"),
+                    asl_config=config.get("asl"), masses_target=target["masses"],
+                    ingredient_mass_scale=float(config.get("ingredient_mass_scale", 300)),
+                    mass_scale=float(config.get("mass_scale", 300)),
+                )
             if not torch.isfinite(loss):
                 raise FloatingPointError(f"Non-finite loss in {description}, batch {index}")
             if training:
@@ -111,6 +141,8 @@ def run_epoch(model, loader, matrix, positive_weights, config, device,
         if collect:
             for key, output_name in (("presence", "presence_probabilities"), ("shares", "shares"), ("mass", "total_mass")):
                 collected[key].append(outputs[output_name].detach().float().cpu().numpy())
+            if config.get("model_type") == MODEL_TYPE_V3:
+                collected["conditional_grams"].append(outputs["conditional_grams"].detach().float().cpu().numpy())
             for key in targets:
                 targets[key].append(np.asarray(batch["dish_id"], dtype=str) if key == "dish_ids" else batch[key].numpy())
         progress.set_postfix(loss=f"{totals['total'] / sample_count:.4f}", samples=f"{sample_count}/{len(loader.dataset)}")
@@ -127,4 +159,5 @@ def save_predictions(path, predictions, targets, vocabulary):
         path, probabilities=predictions["presence"], predicted_shares=predictions["shares"],
         predicted_total_mass=predictions["mass"], **targets,
         vocabulary_keys=np.asarray([entry["key"] for entry in vocabulary["entries"]]),
+        **({"conditional_grams": predictions["conditional_grams"]} if "conditional_grams" in predictions else {}),
     )

@@ -1,5 +1,16 @@
 # Estimación de ingredientes y masa con bajo cómputo
 
+## V3: gramos condicionales y split agrupado provisional
+
+Variante experimental separada de V2: BCE ponderada, cantidades supervisadas
+en positivos, penalización de gramos falsos, RGB completo 320×320, fusión
+residual de profundidad y scheduler warmup/cosine. La masa total deriva de
+sumar ingredientes. Todavía no se entrenó ni se demostró mejora de métricas.
+
+- [Notebook Colab V3](COLAB_QUERY2LABEL_V3.ipynb), con operaciones desactivadas.
+- [Guía Colab, Git, Drive y preservación de V2](COLAB_QUERY2LABEL_V3.md).
+- [Arquitectura y pérdidas V3](ARQUITECTURA_QUERY2LABEL_V3.md).
+
 ## V2: multiescala RGB y profundidad estimada
 
 La nueva variante mantiene una sola imagen RGB como entrada y agrega Depth Anything

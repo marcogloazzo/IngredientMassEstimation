@@ -82,7 +82,7 @@ class MultiscaleDepthHeads(SpatialIngredientHeads):
 
 
 class ConvNeXtMultiscaleDepth(nn.Module):
-    def __init__(self, ingredient_count, config, pretrained=True, torch_cache=None):
+    def __init__(self, ingredient_count, config, pretrained=True, torch_cache=None, heads_class=None):
         super().__init__()
         from torchvision.models import ConvNeXt_Small_Weights, convnext_small
         if config.get("encoder_training") != "stages_2_4":
@@ -95,7 +95,7 @@ class ConvNeXtMultiscaleDepth(nn.Module):
         backbone = convnext_small(weights=ConvNeXt_Small_Weights.DEFAULT if pretrained else None)
         self.features = backbone.features
         self.final_norm = backbone.classifier[0]
-        self.heads = MultiscaleDepthHeads(ingredient_count, config)
+        self.heads = (heads_class or MultiscaleDepthHeads)(ingredient_count, config)
         self.encoder_trainable = False
         self.set_encoder_trainable(False)
 
