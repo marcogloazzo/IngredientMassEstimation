@@ -19,10 +19,13 @@ Subir solamente los archivos de esta implementación:
 - Cambios en `src/ingredient_mass/spatial_model.py`, `specialized_model.py`,
   `image_training.py` y scripts `train_image_model.py`, `evaluate_image_model.py`,
   `infer_image_model.py` para reconocer V5, registrar pérdidas y proteger resultados.
+- `src/ingredient_mass/notebook_reports.py`: visualización nativa, sin HTML.
+- `tests/test_notebook_reports.py`: pruebas de tablas/gráficos y lectura sin cambios.
 
 Revisar Source Control: **no incluir tus notebooks V3/V4 ejecutados** en el commit
 V5. No subir NPZ, PT/PTH, dataset, mapas, imágenes ni outputs; ya están ignorados.
-No se agregaron dependencias: reutilizar `requirements-v3.txt`.
+No se agregaron dependencias de entrenamiento: reutilizar `requirements-v3.txt`.
+Para mostrar resultados, el notebook instala además Matplotlib (no afecta train).
 
 ## Drive
 
@@ -58,7 +61,7 @@ no escribe resultados en las versiones anteriores.
    V3/V4. GPU recomendada para la corrida prevista: verificar DEVICE="cuda".
 5. Tras entrenar, punto 8: RUN_CALIBRATION=True, mantener RUN_TEST=False mientras
    se selecciona arquitectura. La calibración no cambia gramos.
-6. Punto 9: RUN_V5_DIAGNOSTIC=True y RUN_COMPARISON=True para HTML del diagnóstico
+6. Punto 9: RUN_V5_DIAGNOSTIC=True y RUN_COMPARISON=True para tablas y gráficos del diagnóstico
    y comparaciones contra V3 y V4 split_only, usando validación guardada.
 
 Cada evaluación/diagnóstico/comparación debe usar carpetas nuevas. Cambiar
@@ -74,6 +77,18 @@ a diferencia de split_only de V4. `metrics.json` informa el auxiliar aparte.
 
 La mejora debe verse en gramos finales y nutrientes, no solo en la masa auxiliar.
 No se cambió el selector de checkpoint para favorecer otra métrica a posteriori.
+
+## Visualización sin HTML
+
+Los puntos 5, 8 y 9 leen los JSON guardados y muestran tablas/gráficos de Matplotlib
+directamente en la celda. No usan `display(HTML(...))` ni abren páginas HTML.
+Los archivos HTML que generen los scripts pueden conservarse, pero no se muestran.
+Incluye métricas finales/auxiliares, contrafactuales, los 15 ingredientes de mayor
+error, grupos TP/FN/FP/TN y comparaciones V3/V4 contra V5.
+Si falta un reporte, se informa su ruta en texto; no se ejecuta el modelo para crearlo.
+Verificación de esta actualización: 14 pruebas aprobadas (6 de visualización y
+8 de V5), con revisión visual de tablas renderizadas. La celda de training se
+conservó idéntica.
 
 ## Verificación local
 
