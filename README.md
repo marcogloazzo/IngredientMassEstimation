@@ -1,5 +1,14 @@
 # Estimación de ingredientes y masa con bajo cómputo
 
+## V5: MLP compartido y masa total auxiliar
+
+Experimento aislado pendiente: mantiene el MLP compartido de V3 y activa el cabezal
+auxiliar de masa total y consistencia. No combina los MLP separados de V4.
+Los gramos finales siguen siendo `p × c`; se reutilizan datos/cache V3 sin cambios.
+Ver [arquitectura V5](ARQUITECTURA_QUERY2LABEL_V5.md),
+[guía Git/Drive/Colab](COLAB_QUERY2LABEL_V5.md) y
+[notebook V5](COLAB_QUERY2LABEL_V5.ipynb), con entrenamiento y test desactivados.
+
 ## V4: cabezales especializados y diagnóstico p × c
 
 Nueva variante aislada, sin modificar checkpoints/configs/notebooks V2/V3.

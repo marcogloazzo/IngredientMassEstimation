@@ -14,7 +14,7 @@ sys.path.insert(0, str(PROJECT_ROOT / "src"))
 from ingredient_mass.data import nutrient_matrix, write_json
 from ingredient_mass.features import resolve_device
 from ingredient_mass.model import load_checkpoint
-from ingredient_mass.spatial_model import DEPTH_MODEL_TYPES, CONDITIONAL_MODEL_TYPES, MODEL_TYPE_V4, image_transforms, model_from_checkpoint
+from ingredient_mass.spatial_model import DEPTH_MODEL_TYPES, CONDITIONAL_MODEL_TYPES, protected_result_namespaces, image_transforms, model_from_checkpoint
 
 
 def save_intermediates(output_dir, tensor, outputs, vocabulary, top_k):
@@ -137,7 +137,7 @@ def main():
                            "encoder": checkpoint["config"]["depth"]["encoder"],
                            "checkpoint_sha256": checkpoint["config"]["depth_checkpoint_sha256"]}
     output_dir = args.output_dir / args.image.stem
-    forbidden = {"v2", "v3"} if checkpoint["model_type"] == MODEL_TYPE_V4 else {"v2"}
+    forbidden = protected_result_namespaces(checkpoint["model_type"])
     if checkpoint["model_type"] in CONDITIONAL_MODEL_TYPES and forbidden & {part.lower() for part in output_dir.parts}:
         raise ValueError("Predictions must not write inside an earlier version's namespace")
     if checkpoint["model_type"] in CONDITIONAL_MODEL_TYPES and (output_dir / "prediction.json").is_file():

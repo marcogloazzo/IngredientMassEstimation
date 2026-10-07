@@ -1,4 +1,4 @@
-"""V4: specialized task MLPs and an auxiliary visual total-mass predictor.
+"""V4/V5: optional specialized MLPs and an auxiliary visual total-mass predictor.
 
 The deployed masses remain p*c. The auxiliary head is supervision, NOT a
 post-hoc rescaling rule. Flags permit separate, controlled ablations.
@@ -80,9 +80,9 @@ class SpecializedDepthHeads(ConditionalDepthHeads):
 class ConvNeXtSpecializedMass(ConvNeXtMultiscaleDepth):
     def __init__(self, ingredient_count, config, pretrained=True, torch_cache=None):
         if config.get("presence_loss") != "bce":
-            raise ValueError("V4 preserves V3 weighted BCE")
+            raise ValueError("V4/V5 preserve V3 weighted BCE")
         if config.get("presence_gate") != "pos_weight_corrected_sigmoid" or int(config.get("image_size", 0)) != 320:
-            raise ValueError("V4 preserves prior-corrected presence gates and 320x320 geometry")
+            raise ValueError("V4/V5 preserve prior-corrected presence gates and 320x320 geometry")
         weights = config["loss_weights"]
         if not config.get("auxiliary_total_mass", True) and any(float(weights.get(key, 0)) != 0 for key in ("aux_mass", "mass_consistency")):
             raise ValueError("Disable auxiliary loss weights when disabling its head")

@@ -14,7 +14,7 @@ from ingredient_mass.features import resolve_device
 from ingredient_mass.image_training import load_prepared, make_loader, positive_class_weights, run_epoch, save_predictions, prepared_fingerprint, auxiliary_mass_metrics
 from ingredient_mass.metrics import find_best_global_threshold, full_metrics
 from ingredient_mass.model import load_checkpoint
-from ingredient_mass.spatial_model import DEPTH_MODEL_TYPES, CONDITIONAL_MODEL_TYPES, MODEL_TYPE_V3, MODEL_TYPE_V4, model_from_checkpoint
+from ingredient_mass.spatial_model import DEPTH_MODEL_TYPES, CONDITIONAL_MODEL_TYPES, MODEL_TYPE_V3, MODEL_TYPE_V4, MODEL_TYPE_V5, protected_result_namespaces, model_from_checkpoint
 from ingredient_mass.depth import file_sha256
 
 
@@ -34,10 +34,10 @@ def main():
     if args.calibrate and args.split != "validation":
         parser.error("Calibrate on validation only, never on test")
     checkpoint = load_checkpoint(args.checkpoint, "cpu")
-    default_report = {MODEL_TYPE_V3: "query2label_v3_evaluation", MODEL_TYPE_V4: "query2label_v4_evaluation"}.get(checkpoint["model_type"], "query2label_evaluation")
+    default_report = {MODEL_TYPE_V3: "query2label_v3_evaluation", MODEL_TYPE_V4: "query2label_v4_evaluation", MODEL_TYPE_V5: "query2label_v5_evaluation"}.get(checkpoint["model_type"], "query2label_evaluation")
     args.output_dir = args.output_dir or PROJECT_ROOT / "outputs" / default_report
     if checkpoint["model_type"] in CONDITIONAL_MODEL_TYPES:
-        forbidden = {"v2", "v3"} if checkpoint["model_type"] == MODEL_TYPE_V4 else {"v2"}
+        forbidden = protected_result_namespaces(checkpoint["model_type"])
         if forbidden & {part.lower() for part in args.output_dir.parts}:
             raise ValueError("Evaluation must not write inside an earlier version's namespace")
         if args.output_dir.exists() and any(args.output_dir.iterdir()):

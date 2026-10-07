@@ -13,7 +13,7 @@ from tqdm import tqdm
 from .data import read_json, read_jsonl, vectorize_record
 from .features import PreparedImageDataset
 from .model import compute_loss
-from .spatial_model import SUPPORTED_MODEL_TYPES, DEPTH_MODEL_TYPES, CONDITIONAL_MODEL_TYPES, MODEL_TYPE_V4, image_transforms
+from .spatial_model import SUPPORTED_MODEL_TYPES, DEPTH_MODEL_TYPES, CONDITIONAL_MODEL_TYPES, SPECIALIZED_MODEL_TYPES, image_transforms
 
 
 def prepared_fingerprint(processed_dir):
@@ -96,7 +96,7 @@ def run_epoch(model, loader, matrix, positive_weights, config, device,
     if config.get("model_type") in CONDITIONAL_MODEL_TYPES:
         collected["conditional_grams"] = []
         collected["ingredient_masses"] = []
-    if config.get("model_type") == MODEL_TYPE_V4 and config.get("auxiliary_total_mass", True):
+    if config.get("model_type") in SPECIALIZED_MODEL_TYPES and config.get("auxiliary_total_mass", True):
         collected["auxiliary_total_mass"] = []
     targets = {key: [] for key in ("presence", "shares", "masses", "total_mass", "nutrients", "dish_ids")}
     totals, sample_count = {}, 0
@@ -113,7 +113,7 @@ def run_epoch(model, loader, matrix, positive_weights, config, device,
                     outputs = model(images)
             # All loss arithmetic outside autocast, using FP32 model predictions.
             if config.get("model_type") in CONDITIONAL_MODEL_TYPES:
-                if config.get("model_type") == MODEL_TYPE_V4:
+                if config.get("model_type") in SPECIALIZED_MODEL_TYPES:
                     from .specialized_model import specialized_mass_loss as mass_loss
                 else:
                     from .conditional_model import conditional_mass_loss as mass_loss
