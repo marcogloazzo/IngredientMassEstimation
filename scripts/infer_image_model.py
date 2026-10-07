@@ -14,7 +14,7 @@ sys.path.insert(0, str(PROJECT_ROOT / "src"))
 from ingredient_mass.data import nutrient_matrix, write_json
 from ingredient_mass.features import resolve_device
 from ingredient_mass.model import load_checkpoint
-from ingredient_mass.spatial_model import DEPTH_MODEL_TYPES, CONDITIONAL_MODEL_TYPES, protected_result_namespaces, image_transforms, model_from_checkpoint
+from ingredient_mass.spatial_model import DEPTH_MODEL_TYPES, CONDITIONAL_MODEL_TYPES, MODEL_TYPE_V6, protected_result_namespaces, image_transforms, model_from_checkpoint
 
 
 def save_intermediates(output_dir, tensor, outputs, vocabulary, top_k):
@@ -37,6 +37,10 @@ def save_intermediates(output_dir, tensor, outputs, vocabulary, top_k):
     if "depth_input" in arrays:
         Image.fromarray((arrays["depth_input"][0, 0] * 255).clip(0, 255).astype(np.uint8)).save(
             directory / "estimated_relative_depth.png")
+    for key in ("depth_spatial_gate_stage3","depth_spatial_gate_stage4"):
+        if key in arrays:
+            Image.fromarray((arrays[key][0,0]*255).clip(0,255).astype(np.uint8)).resize(
+                preview.size,Image.Resampling.NEAREST).save(directory/f"{key}.png")
     order = np.argsort(arrays["ingredient_masses"][0])[::-1][:top_k]
     for rank, index in enumerate(order, 1):
         name = vocabulary["entries"][int(index)]["name"]
@@ -106,6 +110,8 @@ def main():
     predicted_mass = float(outputs["total_mass"].item())
     total_mass = float(args.total_mass_grams) if args.total_mass_grams is not None else predicted_mass
     shares = outputs["shares"][0].cpu().numpy()
+    if args.total_mass_grams is not None and shares.sum() <= 1e-8:
+        raise ValueError("No ingredients survived the mass cutoff; cannot redistribute a known total mass")
     probabilities = outputs["presence_probabilities"][0].cpu().numpy()
     masses = shares * total_mass
     nutrients = masses @ nutrient_matrix(vocabulary)
@@ -132,6 +138,16 @@ def main():
     if "auxiliary_total_mass" in outputs:
         report["auxiliary_total_mass_grams"] = float(outputs["auxiliary_total_mass"].item())
         report["auxiliary_mass_used_for_predictions"] = False
+    if checkpoint["model_type"] == MODEL_TYPE_V6:
+        raw = outputs["unfiltered_ingredient_masses"][0].cpu().numpy()
+        scales = outputs["class_gram_scales"].cpu().numpy()
+        retained = outputs["mass_retained"][0].cpu().numpy()
+        for ingredient,index in zip(ingredients,order):
+            ingredient.update(unfiltered_grams=float(raw[index]),class_scale_grams=float(scales[index]),
+                              mass_retained=bool(retained[index]))
+        report.update(mass_filter=checkpoint["config"]["mass_filter"],
+                      unfiltered_total_mass_grams=float(raw.sum()),empty_prediction=predicted_mass <= 1e-8,
+                      removed_mass_grams=float(raw.sum())-predicted_mass)
     if depth is not None:
         report["depth"] = {"source": "estimated_from_rgb", "relative_not_metric": True,
                            "encoder": checkpoint["config"]["depth"]["encoder"],

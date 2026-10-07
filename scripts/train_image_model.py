@@ -1,4 +1,4 @@
-"""Train spatial Q2L v1-v5 with partial ConvNeXt adjustment; never train on test."""
+"""Train spatial Q2L v1-v6 with partial ConvNeXt adjustment; never train on test."""
 import argparse
 import csv
 import json
@@ -18,7 +18,7 @@ from ingredient_mass.features import resolve_device
 from ingredient_mass.image_training import load_prepared, make_loader, positive_class_weights, run_epoch, prepared_fingerprint, save_predictions, auxiliary_mass_metrics
 from ingredient_mass.metrics import full_metrics
 from ingredient_mass.model import load_checkpoint, mean_training_mass
-from ingredient_mass.spatial_model import DEPTH_MODEL_TYPES, CONDITIONAL_MODEL_TYPES, SPECIALIZED_MODEL_TYPES, MODEL_TYPE_V3, MODEL_TYPE_V4, MODEL_TYPE_V5, protected_result_namespaces, create_image_model
+from ingredient_mass.spatial_model import DEPTH_MODEL_TYPES, CONDITIONAL_MODEL_TYPES, SPECIALIZED_MODEL_TYPES, MODEL_TYPE_V3, MODEL_TYPE_V4, MODEL_TYPE_V5, MODEL_TYPE_V6, protected_result_namespaces, create_image_model
 
 
 def parse_args():
@@ -35,6 +35,7 @@ def parse_args():
     parser.add_argument("--batch-size", type=int)
     parser.add_argument("--epochs", type=int)
     parser.add_argument("--resume", type=Path)
+    parser.add_argument("--clip-queries",type=Path,help="V6 text-query cache prepared once, also checked on resume")
     parser.add_argument("--check-data", action="store_true", help="Check config/data only; no model loading or downloads")
     return parser.parse_args()
 
@@ -94,7 +95,7 @@ def main():
         value = getattr(args, key)
         if value is not None:
             config[key] = value
-    expected_training = "stages_2_4" if config.get("model_type") in DEPTH_MODEL_TYPES else "last_stage"
+    expected_training = "stages_2_4" if config.get("model_type") in DEPTH_MODEL_TYPES and config.get("model_type") != MODEL_TYPE_V6 else "last_stage"
     if config.get("encoder_training") != expected_training:
         raise ValueError(f"This model requires encoder_training={expected_training}")
     if config.get("shared_dims") != [384, 192]:
@@ -119,12 +120,18 @@ def main():
         if config.get("model_type") in CONDITIONAL_MODEL_TYPES:
             from ingredient_mass.depth import file_sha256
             config["depth_manifest_sha256"] = file_sha256(args.depth_cache / "manifest.json")
+    clip_values = None
+    if config.get("model_type") == MODEL_TYPE_V6:
+        from ingredient_mass.clip_queries import read_clip_queries
+        from ingredient_mass.depth import file_sha256
+        clip_values = read_clip_queries(args.clip_queries,vocabulary,config,config["prepared_fingerprint"]["vocabulary.json"])
+        config["clip_queries_sha256"] = file_sha256(args.clip_queries)
     if args.check_data:
         print(json.dumps({"config": config, "classes": len(vocabulary["entries"]),
                           "splits": {split: sum(r["split"] == split for r in records)
                                      for split in ("train", "validation", "test")}}, indent=2))
         return
-    default_run = {MODEL_TYPE_V3: "query2label_100_v3_bce", MODEL_TYPE_V4: "query2label_100_v4_specialized", MODEL_TYPE_V5: "query2label_100_v5_auxiliary"}.get(config["model_type"], "query2label_100_asl")
+    default_run = {MODEL_TYPE_V3: "query2label_100_v3_bce", MODEL_TYPE_V4: "query2label_100_v4_specialized", MODEL_TYPE_V5: "query2label_100_v5_auxiliary",MODEL_TYPE_V6:"query2label_100_v6_asl"}.get(config["model_type"], "query2label_100_asl")
     output_dir = (args.output_dir or PROJECT_ROOT / "artifacts" / default_run).resolve()
     if protected_result_namespaces(config["model_type"]) & {part.lower() for part in output_dir.parts}:
         raise ValueError("Training must use a new namespace, never an earlier version's results")
@@ -149,7 +156,11 @@ def main():
     if resumed:
         model.load_state_dict(resumed["model_state"], strict=True)
     elif config["model_type"] in CONDITIONAL_MODEL_TYPES:
-        model.initialize_from_train(records, vocabulary)
+        initialization = model.initialize_from_train(records, vocabulary)
+        if config["model_type"] == MODEL_TYPE_V6:
+            model.heads.initialize_clip_queries(clip_values[0],clip_values[1])
+    if config["model_type"] == MODEL_TYPE_V6 and not bool(model.heads.clip_initialized.item()):
+        raise ValueError("V6 training requires initialized CLIP queries")
     train_loader = make_loader(records, vocabulary, args.dataset_root, "train", int(config["batch_size"]),
                                args.workers, device, training=True, seed=seed,
                                config=config, depth_cache=args.depth_cache)
@@ -180,6 +191,12 @@ def main():
         restore_rng(resumed["rng_state"], train_loader)
     output_dir.mkdir(parents=True, exist_ok=True)
     write_json(output_dir / "config.json", config)
+    if config["model_type"] == MODEL_TYPE_V6:
+        if not resumed:
+            write_json(output_dir/"class_mass_scales.json",{"source":"positive masses from train only",
+                "settings":config["conditional_scale"],"fallback_scale_grams":initialization["fallback_scale_grams"],
+                "classes":initialization["scale_details"],"prepared_fingerprint":config["prepared_fingerprint"]})
+        write_json(output_dir/"clip_initialization.json",clip_values[2])
     print(f"Device: {device}; presence loss: {config['presence_loss']}; classes: {len(vocabulary['entries'])}")
     print(f"Model: {config['model_type']}; encoder adjustment: {config['encoder_training']}", flush=True)
     print(f"Total-mass loss scale (training mean): {config['mass_scale']:.6f} g")
@@ -194,6 +211,10 @@ def main():
             fields += [f"{split}_{key}" for split in ("train", "validation") for key in config["loss_weights"]]
         if config["model_type"] in SPECIALIZED_MODEL_TYPES and config.get("auxiliary_total_mass", True):
             fields += ["auxiliary_total_mass_mae", "mass_consistency_gap_mae"]
+        if config["model_type"] == MODEL_TYPE_V6:
+            fields += ["unfiltered_ingredient_l1","unfiltered_total_mass_mae","unfiltered_calorie_mae",
+                       "unfiltered_false_mass","removed_mass_per_plate","empty_predicted_plates","mass_threshold",
+                       "depth_gate_stage3_mean","depth_gate_stage4_mean","mass_consistency_gap_unfiltered_mae"]
         writer = csv.DictWriter(history, fieldnames=fields)
         if not resumed or not has_history:
             writer.writeheader()
@@ -210,6 +231,9 @@ def main():
             metrics = full_metrics(predictions["presence"], predictions["shares"], predictions["mass"],
                                    targets, matrix_np, float(config["presence_threshold"]))
             metrics.update(auxiliary_mass_metrics(predictions, targets))
+            if config["model_type"] == MODEL_TYPE_V6:
+                from ingredient_mass.mass_filtering import v6_metric_details
+                metrics.update(v6_metric_details(predictions,targets,matrix_np,config))
             quantities = metrics["end_to_end_lightweight_mass"]
             row = {
                 "epoch": epoch, "encoder_trainable": encoder_enabled,
@@ -229,6 +253,16 @@ def main():
             if "auxiliary_total_mass" in metrics:
                 row.update(auxiliary_total_mass_mae=metrics["auxiliary_total_mass"]["mae_grams"],
                            mass_consistency_gap_mae=metrics["auxiliary_total_mass"]["consistency_gap_mae_grams"])
+            if config["model_type"] == MODEL_TYPE_V6:
+                dense = metrics["unfiltered_end_to_end"]
+                row.update(unfiltered_ingredient_l1=dense["ingredient_mass_l1_per_plate_grams"],
+                    unfiltered_total_mass_mae=dense["total_mass_mae_grams"],unfiltered_calorie_mae=dense["nutrients"]["calories"]["mae"],
+                    unfiltered_false_mass=dense["false_ingredient_mass_per_plate_grams"],
+                    removed_mass_per_plate=metrics["mass_filter"]["removed_g_per_plate"],
+                    empty_predicted_plates=metrics["mass_filter"]["empty_predicted_plates"],mass_threshold=config["mass_filter"]["threshold"],
+                    depth_gate_stage3_mean=float(predictions["depth_gate_means"][:,0].mean()),
+                    depth_gate_stage4_mean=float(predictions["depth_gate_means"][:,1].mean()),
+                    mass_consistency_gap_unfiltered_mae=metrics["auxiliary_total_mass"]["consistency_gap_unfiltered_mae_grams"])
             writer.writerow(row)
             history.flush()
             improved = row[selection] > best if selection == "micro_f1" else row[selection] < best
@@ -249,6 +283,7 @@ def main():
                         "split": "validation", "epoch": epoch, "model_type": config["model_type"],
                         "threshold": config["presence_threshold"], "prepared_fingerprint": config["prepared_fingerprint"],
                         "selected_by": selection, "metrics": metrics,
+                        **({"mass_filter":config["mass_filter"]} if config["model_type"] == MODEL_TYPE_V6 else {}),
                     })
             if scheduler is not None:
                 scheduler.step()

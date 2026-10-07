@@ -20,7 +20,8 @@ MODEL_TYPE_V2 = "convnext_small_query2label_multiscale_depth_v2"
 MODEL_TYPE_V3 = "convnext_small_query2label_conditional_mass_v3"
 MODEL_TYPE_V4 = "convnext_small_query2label_specialized_mass_v4"
 MODEL_TYPE_V5 = "convnext_small_query2label_auxiliary_mass_v5"
-SPECIALIZED_MODEL_TYPES = (MODEL_TYPE_V4, MODEL_TYPE_V5)
+MODEL_TYPE_V6 = "convnext_small_query2label_spatial_clip_asl_v6"
+SPECIALIZED_MODEL_TYPES = (MODEL_TYPE_V4, MODEL_TYPE_V5, MODEL_TYPE_V6)
 CONDITIONAL_MODEL_TYPES = (MODEL_TYPE_V3, *SPECIALIZED_MODEL_TYPES)
 DEPTH_MODEL_TYPES = (MODEL_TYPE_V2, *CONDITIONAL_MODEL_TYPES)
 SUPPORTED_MODEL_TYPES = (MODEL_TYPE, *DEPTH_MODEL_TYPES)
@@ -29,7 +30,7 @@ SUPPORTED_MODEL_TYPES = (MODEL_TYPE, *DEPTH_MODEL_TYPES)
 def protected_result_namespaces(model_type):
     """Older Drive namespaces are read-only inputs for a newer experiment."""
     return {MODEL_TYPE_V3: {"v2"}, MODEL_TYPE_V4: {"v2", "v3"},
-            MODEL_TYPE_V5: {"v2", "v3", "v4"}}.get(model_type, set())
+            MODEL_TYPE_V5: {"v2", "v3", "v4"}, MODEL_TYPE_V6: {"v2", "v3", "v4", "v5"}}.get(model_type, set())
 
 
 def position_encoding(height: int, width: int, dimension: int, device, dtype):
@@ -224,6 +225,8 @@ def model_from_checkpoint(checkpoint, device):
     config["model_type"] = checkpoint["model_type"]
     model = create_image_model(len(checkpoint["vocabulary"]["entries"]), config, pretrained=False)
     model.load_state_dict(checkpoint["model_state"], strict=True)
+    if checkpoint["model_type"] == MODEL_TYPE_V6 and not bool(model.heads.clip_initialized.item()):
+        raise ValueError("V6 checkpoint has not initialized its CLIP queries")
     return model.to(device).eval()
 
 
@@ -237,6 +240,9 @@ def create_image_model(ingredient_count, config, pretrained=True, torch_cache=No
     if model_type == MODEL_TYPE_V3:
         from .conditional_model import ConvNeXtConditionalMass
         return ConvNeXtConditionalMass(ingredient_count, config, pretrained, torch_cache)
+    if model_type == MODEL_TYPE_V6:
+        from .robust_model import ConvNeXtRobustMass
+        return ConvNeXtRobustMass(ingredient_count, config, pretrained, torch_cache)
     if model_type in SPECIALIZED_MODEL_TYPES:
         if model_type == MODEL_TYPE_V5 and (config.get("split_task_mlps") is not False or config.get("auxiliary_total_mass") is not True):
             raise ValueError("V5 requires the shared MLP and active auxiliary total-mass head")

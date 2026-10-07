@@ -1,0 +1,104 @@
+{
+  "model_type": "convnext_small_query2label_spatial_clip_asl_v6",
+  "seed": 42,
+  "top_k": 100,
+  "validation_fraction": 0.15,
+  "split_policy": "grouped_provisional",
+  "accept_provisional_split": true,
+  "encoder": "convnext_small",
+  "encoder_training": "last_stage",
+  "image_size": 320,
+  "attention_dim": 256,
+  "attention_heads": 4,
+  "attention_layers": 2,
+  "attention_feedforward": 1024,
+  "attention_dropout": 0.1,
+  "shared_dims": [
+    384,
+    192
+  ],
+  "mass_hidden_dim": 128,
+  "dropout": 0.3,
+  "presence_loss": "asl",
+  "presence_gate": "sigmoid",
+  "conditional_huber_beta": 0.1,
+  "split_task_mlps": false,
+  "auxiliary_total_mass": true,
+  "augmentation": {
+    "rotation_degrees": 15,
+    "brightness": 0.2,
+    "contrast": 0.2,
+    "saturation": 0.15,
+    "hue": 0.03
+  },
+  "depth": {
+    "backend": "depth_anything_v2",
+    "encoder": "vits",
+    "frozen": true,
+    "input_size": 518,
+    "normalization": "percentile_2_98",
+    "geometry": "rgb_letterbox_320_v3",
+    "repo_revision": "a561b849ebae10a6f5ef49e26c83cbbcd36c71bf"
+  },
+  "batch_size": 2,
+  "accumulation_steps": 16,
+  "epochs": 100,
+  "warmup_epochs": 3,
+  "learning_rate": 0.0003,
+  "encoder_learning_rate": 0.00001,
+  "scheduler": {
+    "name": "warmup_cosine",
+    "warmup_epochs": 3,
+    "total_epochs": 100,
+    "min_factor": 0.01
+  },
+  "weight_decay": 0.001,
+  "patience": 8,
+  "selection_metric": "ingredient_mass_l1_per_plate",
+  "presence_threshold": 0.5,
+  "amp": true,
+  "max_grad_norm": 1,
+  "ingredient_mass_scale": 300,
+  "mass_normalization": "train_mean",
+  "loss_weights": {
+    "presence": 1,
+    "conditional": 1,
+    "false_mass": 0.5,
+    "ingredient_mass": 1,
+    "mass": 1,
+    "nutrition": 0.25,
+    "aux_mass": 0.25,
+    "mass_consistency": 0.1
+  },
+  "asl": {
+    "gamma_neg": 4,
+    "gamma_pos": 1,
+    "clip": 0.05,
+    "detach_focal_weight": true
+  },
+  "conditional_scale": {
+    "quantile": 0.9,
+    "min_support": 10,
+    "min_grams": 5,
+    "max_grams": 1000
+  },
+  "depth_spatial_gate": {
+    "hidden_dim": 32,
+    "initial": 0.1
+  },
+  "clip_queries": {
+    "model": "ViT-B/32",
+    "repo_revision": "d05afc436d78f1c48dc0dbf8e5980a9d471f35f6",
+    "template": "a photo of {name}.",
+    "projection_seed": 42,
+    "projection": "orthogonal_random_normalized",
+    "other_key": "__other__"
+  },
+  "mass_filter": {
+    "enabled": true,
+    "threshold": 0.05,
+    "apply_during_training": false,
+    "calibration_max_mass_increase": 0.05,
+    "calibration_max_calorie_increase": 0.05
+  }
+}

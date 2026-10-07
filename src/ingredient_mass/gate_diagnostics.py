@@ -58,7 +58,22 @@ def diagnose_gate(arrays, details, vocabulary=None, thresholds=None):
         raise ValueError("Probabilities outside [0,1] or negative masses/shares")
     baseline = shares * predicted_total[:, None]
     product = p * c
-    if not np.allclose(baseline, product, atol=1e-3, rtol=1e-4):
+    is_v6 = details.get("model_type") == "convnext_small_query2label_spatial_clip_asl_v6"
+    mass_filter = details.get("mass_filter",{})
+    raw_baseline = baseline
+    if is_v6:
+        if "unfiltered_ingredient_masses" not in arrays or "threshold" not in mass_filter:
+            raise ValueError("V6 diagnostics require saved unfiltered masses and mass-filter details")
+        raw_baseline = np.asarray(arrays["unfiltered_ingredient_masses"],dtype=np.float64)
+        if raw_baseline.shape != p.shape or not np.allclose(raw_baseline,product,atol=1e-3,rtol=1e-4):
+            raise ValueError("V6 raw saved masses do not match p*c")
+        cutoff = float(mass_filter["threshold"])
+        if not 0 <= cutoff <= 1:
+            raise ValueError("Invalid V6 mass threshold")
+        expected = product * (p >= cutoff) if mass_filter.get("enabled",True) else product
+        if not np.allclose(baseline,expected,atol=1e-3,rtol=1e-4):
+            raise ValueError("V6 deployed masses do not match the recorded cutoff")
+    elif not np.allclose(baseline, product, atol=1e-3, rtol=1e-4):
         raise ValueError("Saved grams do not match p*c: do not analyze a different mass rule with this diagnostic")
     if "ingredient_masses" in arrays and not np.allclose(arrays["ingredient_masses"], baseline, atol=1e-3, rtol=1e-4):
         raise ValueError("Explicit ingredient masses differ from shares * total")
@@ -89,12 +104,14 @@ def diagnose_gate(arrays, details, vocabulary=None, thresholds=None):
         return row
 
     scenarios = [
-        scenario("baseline", baseline, rule="p*c (saved model outputs)"),
+        scenario("baseline", baseline, rule="p*c with recorded mass cutoff" if is_v6 else "p*c (saved model outputs)"),
         scenario("oracle_remove_false_mass", baseline * present, oracle=True, rule="GT-presence * p*c"),
         scenario("oracle_presence_conditional", c * present, oracle=True, rule="GT-presence * c"),
-        scenario("hard_product_report_threshold", baseline * (p >= threshold), rule="1[p>=tau] * p*c", candidate_threshold=threshold),
+        scenario("hard_product_report_threshold", raw_baseline * (p >= threshold), rule="1[p>=tau] * p*c", candidate_threshold=threshold),
         scenario("hard_conditional_report_threshold", c * (p >= threshold), rule="1[p>=tau] * c", candidate_threshold=threshold),
     ]
+    if is_v6:
+        scenarios.insert(1,scenario("unfiltered",raw_baseline,rule="p*c before mass cutoff"))
     safe = p.clip(1e-12, 1 - 1e-12)
     logits = np.log(safe) - np.log1p(-safe)
     for temperature in (.5, 2.):
@@ -106,13 +123,17 @@ def diagnose_gate(arrays, details, vocabulary=None, thresholds=None):
     sweep = []
     for candidate in candidates:
         recognized = p >= candidate
-        for name, grams in (("hard_product", baseline), ("hard_conditional", c)):
+        for name, grams in (("hard_product", raw_baseline), ("hard_conditional", c)):
             row = scenario(name, grams * recognized, rule=f"{name}: validation-only sweep", candidate_threshold=candidate)
             row["micro_f1"] = ingredient_recognition_metrics(p, present, float(candidate))["micro_f1"]
             sweep.append(row)
     best = {name: min((row for row in sweep if row["name"] == name), key=lambda r: (r["ingredient_l1_g_per_plate"], abs(r["threshold"] - threshold)))
             for name in ("hard_product", "hard_conditional")}
     final_error, conditional_error = np.abs(baseline - truth), np.abs(c - truth)
+    raw_error = np.abs(raw_baseline-truth)
+    class_scales = np.asarray(arrays["class_gram_scales"],dtype=float) if is_v6 and "class_gram_scales" in arrays else None
+    if class_scales is not None and (class_scales.shape != (classes,) or not np.isfinite(class_scales).all() or (class_scales<=0).any()):
+        raise ValueError("Invalid saved V6 class scales")
     class_rows = []
     for i in range(classes):
         mask = present[:, i]
@@ -121,7 +142,10 @@ def diagnose_gate(arrays, details, vocabulary=None, thresholds=None):
             "key": keys[i], "name": names[i], "support": support,
             "conditional_mae_present_g": _mean(conditional_error[mask, i]),
             "final_mae_present_g": _mean(final_error[mask, i]),
-            "gate_effect_mae_g": _mean((final_error - conditional_error)[mask, i]),
+            "gate_effect_mae_g": _mean((raw_error - conditional_error)[mask, i]),
+            **({"filter_effect_mae_g":_mean((final_error-raw_error)[mask,i])} if is_v6 else {}),
+            **({"unfiltered_mae_present_g":_mean(raw_error[mask,i]),
+                "scale_grams":float(class_scales[i]) if class_scales is not None else None} if is_v6 else {}),
             "conditional_bias_present_g": _mean((c - truth)[mask, i]),
             "final_bias_present_g": _mean((baseline - truth)[mask, i]),
             "mean_gate_present": _mean(p[mask, i]),
@@ -141,12 +165,14 @@ def diagnose_gate(arrays, details, vocabulary=None, thresholds=None):
         "epoch": details.get("epoch"), "model_type": details.get("model_type"),
         "recognition_threshold": threshold, "threshold_source": "evaluation_details" if "threshold" in details else "explicit diagnostic default 0.5; original report threshold unavailable",
         "checkpoint_sha256": details.get("checkpoint_sha256"), "prepared_fingerprint": details.get("prepared_fingerprint"),
-        "max_saved_vs_product_difference_g": float(np.abs(baseline - product).max()),
+        "max_saved_vs_product_difference_g": float(np.abs(raw_baseline - product).max()),
+        **({"mass_filter":mass_filter} if is_v6 else {}),
         "global_present": {
             "entries": int(present.sum()), "conditional_mae_g": _mean(conditional_error[present]),
             "final_mae_g": _mean(final_error[present]), "mean_gate": _mean(p[present]),
+            **({"unfiltered_mae_g":_mean(raw_error[present])} if is_v6 else {}),
             "conditional_bias_g": _mean((c - truth)[present]), "final_bias_g": _mean((baseline - truth)[present]),
-            "gate_worsens_error_fraction": _mean((final_error[present] > conditional_error[present] + 1e-6).astype(float)),
+            "gate_worsens_error_fraction": _mean((raw_error[present] > conditional_error[present] + 1e-6).astype(float)),
         },
         "scenarios": scenarios, "best_validation_thresholds": best, "threshold_sweep": sweep,
         "classes_by_l1": sorted(class_rows, key=lambda r: r["l1_contribution_g_per_plate"], reverse=True),

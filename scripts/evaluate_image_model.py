@@ -14,7 +14,7 @@ from ingredient_mass.features import resolve_device
 from ingredient_mass.image_training import load_prepared, make_loader, positive_class_weights, run_epoch, save_predictions, prepared_fingerprint, auxiliary_mass_metrics
 from ingredient_mass.metrics import find_best_global_threshold, full_metrics
 from ingredient_mass.model import load_checkpoint
-from ingredient_mass.spatial_model import DEPTH_MODEL_TYPES, CONDITIONAL_MODEL_TYPES, MODEL_TYPE_V3, MODEL_TYPE_V4, MODEL_TYPE_V5, protected_result_namespaces, model_from_checkpoint
+from ingredient_mass.spatial_model import DEPTH_MODEL_TYPES, CONDITIONAL_MODEL_TYPES, MODEL_TYPE_V3, MODEL_TYPE_V4, MODEL_TYPE_V5, MODEL_TYPE_V6, protected_result_namespaces, model_from_checkpoint
 from ingredient_mass.depth import file_sha256
 
 
@@ -34,7 +34,7 @@ def main():
     if args.calibrate and args.split != "validation":
         parser.error("Calibrate on validation only, never on test")
     checkpoint = load_checkpoint(args.checkpoint, "cpu")
-    default_report = {MODEL_TYPE_V3: "query2label_v3_evaluation", MODEL_TYPE_V4: "query2label_v4_evaluation", MODEL_TYPE_V5: "query2label_v5_evaluation"}.get(checkpoint["model_type"], "query2label_evaluation")
+    default_report = {MODEL_TYPE_V3: "query2label_v3_evaluation", MODEL_TYPE_V4: "query2label_v4_evaluation", MODEL_TYPE_V5: "query2label_v5_evaluation",MODEL_TYPE_V6:"query2label_v6_evaluation"}.get(checkpoint["model_type"], "query2label_evaluation")
     args.output_dir = args.output_dir or PROJECT_ROOT / "outputs" / default_report
     if checkpoint["model_type"] in CONDITIONAL_MODEL_TYPES:
         forbidden = protected_result_namespaces(checkpoint["model_type"])
@@ -69,17 +69,31 @@ def main():
         checkpoint["calibration"] = {"split": "validation", "previous_threshold": previous,
                                       "threshold": threshold, "metrics": recognition,
                                       "method": "global_presence_threshold_only", "changes_ingredient_grams": False}
+        if checkpoint["model_type"] == MODEL_TYPE_V6:
+            from ingredient_mass.mass_filtering import calibrate_mass_threshold,apply_mass_filter
+            mass_threshold,mass_report = calibrate_mass_threshold(predictions,targets,matrix_np,config,split=args.split)
+            config["mass_filter"] = {**config["mass_filter"],"threshold":mass_threshold}
+            predictions = apply_mass_filter(predictions,mass_threshold,config["mass_filter"]["enabled"])
+            checkpoint["config"] = config
+            checkpoint["calibration"].update(method="presence_f1_and_mass_cutoff_separate_validation",
+                changes_ingredient_grams=True,mass_filter=mass_report)
         torch.save(checkpoint, args.output_dir / "calibrated.pt")
     metrics = full_metrics(predictions["presence"], predictions["shares"], predictions["mass"], targets,
                            matrix_np, float(config["presence_threshold"]))
     metrics.update(auxiliary_mass_metrics(predictions, targets))
+    if checkpoint["model_type"] == MODEL_TYPE_V6:
+        from ingredient_mass.mass_filtering import v6_metric_details
+        metrics.update(v6_metric_details(predictions,targets,matrix_np,config))
     write_json(args.output_dir / "metrics.json", metrics)
     write_json(args.output_dir / "evaluation_details.json", {"split": args.split, "samples": len(loader.dataset),
                                                             "losses": losses, "threshold": config["presence_threshold"],
                                                             "epoch": checkpoint.get("epoch"), "model_type": checkpoint["model_type"],
                                                             "prepared_fingerprint": prepared_fingerprint(args.processed_dir),
                                                             "vocabulary_keys": [entry["key"] for entry in vocabulary["entries"]],
-                                                            "checkpoint_sha256": file_sha256(args.checkpoint)})
+                                                            "checkpoint_sha256": file_sha256(args.checkpoint),
+                                                            **({"mass_filter":config["mass_filter"],
+                                                                "mass_calibration":checkpoint.get("calibration",{}).get("mass_filter")}
+                                                               if checkpoint["model_type"] == MODEL_TYPE_V6 else {})})
     save_predictions(args.output_dir / "predictions.npz", predictions, targets, vocabulary)
     print(json.dumps(metrics, indent=2))
     print(f"Reports: {args.output_dir.resolve()}")

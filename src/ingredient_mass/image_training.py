@@ -13,7 +13,7 @@ from tqdm import tqdm
 from .data import read_json, read_jsonl, vectorize_record
 from .features import PreparedImageDataset
 from .model import compute_loss
-from .spatial_model import SUPPORTED_MODEL_TYPES, DEPTH_MODEL_TYPES, CONDITIONAL_MODEL_TYPES, SPECIALIZED_MODEL_TYPES, image_transforms
+from .spatial_model import SUPPORTED_MODEL_TYPES, DEPTH_MODEL_TYPES, CONDITIONAL_MODEL_TYPES, SPECIALIZED_MODEL_TYPES, MODEL_TYPE_V6, image_transforms
 
 
 def prepared_fingerprint(processed_dir):
@@ -98,6 +98,10 @@ def run_epoch(model, loader, matrix, positive_weights, config, device,
         collected["ingredient_masses"] = []
     if config.get("model_type") in SPECIALIZED_MODEL_TYPES and config.get("auxiliary_total_mass", True):
         collected["auxiliary_total_mass"] = []
+    if config.get("model_type") == MODEL_TYPE_V6:
+        for key in ("unfiltered_ingredient_masses","mass_retained","depth_gate_means"):
+            collected[key] = []
+    constants = {}
     targets = {key: [] for key in ("presence", "shares", "masses", "total_mass", "nutrients", "dish_ids")}
     totals, sample_count = {}, 0
     progress = tqdm(loader, desc=description, unit="batch", file=sys.stdout, mininterval=1)
@@ -113,7 +117,9 @@ def run_epoch(model, loader, matrix, positive_weights, config, device,
                     outputs = model(images)
             # All loss arithmetic outside autocast, using FP32 model predictions.
             if config.get("model_type") in CONDITIONAL_MODEL_TYPES:
-                if config.get("model_type") in SPECIALIZED_MODEL_TYPES:
+                if config.get("model_type") == MODEL_TYPE_V6:
+                    from .robust_model import robust_mass_loss as mass_loss
+                elif config.get("model_type") in SPECIALIZED_MODEL_TYPES:
                     from .specialized_model import specialized_mass_loss as mass_loss
                 else:
                     from .conditional_model import conditional_mass_loss as mass_loss
@@ -147,16 +153,18 @@ def run_epoch(model, loader, matrix, positive_weights, config, device,
         if collect:
             for key, output_name in (("presence", "presence_probabilities"), ("shares", "shares"), ("mass", "total_mass")):
                 collected[key].append(outputs[output_name].detach().float().cpu().numpy())
-            for key in ("conditional_grams", "ingredient_masses", "auxiliary_total_mass"):
+            for key in ("conditional_grams", "ingredient_masses", "auxiliary_total_mass", "unfiltered_ingredient_masses", "mass_retained", "depth_gate_means"):
                 if key in collected:
                     collected[key].append(outputs[key].detach().float().cpu().numpy())
+            if index == 0 and config.get("model_type") == MODEL_TYPE_V6:
+                constants["class_gram_scales"] = outputs["class_gram_scales"].detach().float().cpu().numpy()
             for key in targets:
                 targets[key].append(np.asarray(batch["dish_id"], dtype=str) if key == "dish_ids" else batch[key].numpy())
         progress.set_postfix(loss=f"{totals['total'] / sample_count:.4f}", samples=f"{sample_count}/{len(loader.dataset)}")
     losses = {key: value / sample_count for key, value in totals.items()}
     if not collect:
         return losses, None, None
-    return (losses, {key: np.concatenate(value) for key, value in collected.items()},
+    return (losses, {**{key: np.concatenate(value) for key, value in collected.items()}, **constants},
             {key: np.concatenate(value) for key, value in targets.items()})
 
 
@@ -166,7 +174,7 @@ def save_predictions(path, predictions, targets, vocabulary):
         path, probabilities=predictions["presence"], predicted_shares=predictions["shares"],
         predicted_total_mass=predictions["mass"], **targets,
         vocabulary_keys=np.asarray([entry["key"] for entry in vocabulary["entries"]]),
-        **{key: predictions[key] for key in ("conditional_grams", "ingredient_masses", "auxiliary_total_mass") if key in predictions},
+        **{key: predictions[key] for key in ("conditional_grams", "ingredient_masses", "auxiliary_total_mass", "unfiltered_ingredient_masses", "mass_retained", "depth_gate_means", "class_gram_scales") if key in predictions},
     )
 
 
@@ -174,9 +182,13 @@ def auxiliary_mass_metrics(predictions, targets):
     if "auxiliary_total_mass" not in predictions:
         return {}
     auxiliary = predictions["auxiliary_total_mass"]
-    return {"auxiliary_total_mass": {
+    result = {"auxiliary_total_mass": {
         "mae_grams": float(np.abs(auxiliary - targets["total_mass"]).mean()),
         "bias_grams": float((auxiliary - targets["total_mass"]).mean()),
         "consistency_gap_mae_grams": float(np.abs(auxiliary - predictions["mass"]).mean()),
         "used_for_deployed_masses": False,
     }}
+    if "unfiltered_ingredient_masses" in predictions:
+        result["auxiliary_total_mass"]["consistency_gap_unfiltered_mae_grams"] = float(
+            np.abs(auxiliary-predictions["unfiltered_ingredient_masses"].sum(1)).mean())
+    return result

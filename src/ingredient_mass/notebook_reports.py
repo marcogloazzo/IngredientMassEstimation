@@ -78,6 +78,12 @@ def show_metrics(report, title="Métricas guardadas", details=None):
         auxiliary = report.get("auxiliary_total_mass", {})
         if key in auxiliary:
             rows.append({"metric":label,"value":auxiliary[key]})
+    if "unfiltered_end_to_end" in report:
+        dense = report["unfiltered_end_to_end"]
+        rows += [{"metric":"L1 sin filtro (g/plato)","value":dense["ingredient_mass_l1_per_plate_grams"]},
+                 {"metric":"MAE masa sin filtro (g)","value":dense["total_mass_mae_grams"]},
+                 {"metric":"MAE calorías sin filtro (kcal)","value":dense["nutrients"]["calories"]["mae"]}]
+        print("Filtro de masa:", report.get("mass_filter",{}))
     if details:
         print(f"{title}: época {details.get('epoch', 'no registrada')}; "
               f"umbral presencia {_number(details.get('threshold'))}.")
@@ -96,12 +102,17 @@ def show_diagnostic(report, title="Diagnóstico p × c", top_k=15):
         "temperature_0.5":"Gate con temperatura 0,5", "temperature_2":"Gate con temperatura 2",
         "hard_product":"Mejor recorte p × c en esta validación",
         "hard_conditional":"Mejor recorte c en esta validación",
+        "unfiltered":"Sin filtro: p × c",
     }
+    if "mass_filter" in report:
+        labels["baseline"] = "Modelo guardado: p × c con filtro"
     present = report.get("global_present", {})
     rows = [{"metric":"MAE condicional c presente (g/ingrediente)","value":present.get("conditional_mae_g")},
-            {"metric":"MAE final p × c presente (g/ingrediente)","value":present.get("final_mae_g")},
+            {"metric":"MAE final CON filtro (g/ingrediente)" if "mass_filter" in report else "MAE final p × c presente (g/ingrediente)","value":present.get("final_mae_g")},
             {"metric":"Sesgo condicional presente (g/ingrediente)","value":present.get("conditional_bias_g")},
             {"metric":"Sesgo final presente (g/ingrediente)","value":present.get("final_bias_g")}]
+    if "unfiltered_mae_g" in present:
+        rows.append({"metric":"MAE p × c presente SIN filtro (g/ingrediente)","value":present["unfiltered_mae_g"]})
     auxiliary = report.get("auxiliary_total_mass", {})
     if auxiliary:
         rows += [{"metric":"MAE masa auxiliar (g)","value":auxiliary.get("mae_g")},
@@ -120,6 +131,11 @@ def show_diagnostic(report, title="Diagnóstico p × c", top_k=15):
         ("final_bias_present_g","Sesgo final g"),("l1_contribution_g_per_plate","L1 g/plato"),
         ("false_g_per_plate","Falsos g/plato")],width=18,first_width=.24))
     print("Δ MAE por gate positivo: p empeora el error con c fijo. Sesgo negativo: subestimación. Soporte bajo: promedio incierto.")
+    if "mass_filter" in report:
+        print("Filtro de masa aplicado:",report["mass_filter"])
+        figures.append(_table("Escalas train y efecto del recorte",classes,[
+            ("name","Ingrediente"),("scale_grams","Escala train g"),("unfiltered_mae_present_g","MAE sin filtro g"),
+            ("final_mae_present_g","MAE filtrado g"),("filter_effect_mae_g","Δ MAE por corte g")],width=15,first_width=.35))
     figures.append(_table("Presencia correcta y errores de reconocimiento", report.get("recognition_buckets", []), [
         ("group","Grupo"),("ingredient_entries","Entradas"),("mean_probability","p medio"),
         ("conditional_mae_g","MAE c g"),("final_mae_g","MAE p×c g"),("final_bias_g","Sesgo final g")],
@@ -130,21 +146,22 @@ def show_diagnostic(report, title="Diagnóstico p × c", top_k=15):
 
 def show_comparison(report, title="Comparación con V5"):
     import matplotlib.pyplot as plt
+    candidate = "V6" if "v6" in (title+str(report.get("right",""))).lower() else "V5"
     print(report.get("warning", "No se registró la verificación de datos/split."))
     rows = []
     for row in report.get("metrics", []):
         delta = row["right_minus_left"]
         improvement = delta > 0 if row["higher_is_better"] else delta < 0
         rows.append({**row,"change":"Igual" if abs(delta)<1e-8 else "Mejora" if improvement else "Empeora"})
-    figures = [_table(title,rows,[("metric","Métrica"),("left","Referencia"),("right","V5"),
-                                  ("right_minus_left","Δ V5 − referencia"),("change","Cambio numérico")],width=14,first_width=.40)]
+    figures = [_table(title,rows,[("metric","Métrica"),("left","Referencia"),("right",candidate),
+                                  ("right_minus_left",f"Δ {candidate} − referencia"),("change","Cambio numérico")],width=14,first_width=.40)]
     print("Para F1, Δ se expresa en puntos porcentuales. Mejora/empeora indica dirección numérica, no significancia estadística.")
     grams = [row for row in rows if row["metric"] in ("L1 ingredientes (g/plato)","MAE masa total (g)","Gramos falsos/plato")]
     if grams:
         fig, ax = plt.subplots(figsize=(11,4.5))
         positions = list(range(len(grams)))
         ax.bar([x-.18 for x in positions],[r["left"] for r in grams],width=.36,label="Referencia",color="#7f99b4")
-        ax.bar([x+.18 for x in positions],[r["right"] for r in grams],width=.36,label="V5",color="#226b96")
+        ax.bar([x+.18 for x in positions],[r["right"] for r in grams],width=.36,label=candidate,color="#226b96")
         ax.set_xticks(positions,[fill(r["metric"],26) for r in grams])
         ax.set_ylabel("Gramos (L1/falsos por plato; MAE total por imagen)")
         ax.set_title(title + " · errores de masa")

@@ -1,5 +1,14 @@
 # Estimación de ingredientes y masa con bajo cómputo
 
+## V6: ASL, escalas por clase, depth espacial y consultas CLIP
+
+Nueva variante aislada con ajuste exclusivo de etapa 4, consultas inicializadas
+con texto CLIP, fusión residual espacial y filtro de masa calibrado en validación.
+Reutiliza etiquetas/mapas V3 y conserva resultados anteriores; no se ha entrenado.
+Ver [arquitectura V6](ARQUITECTURA_QUERY2LABEL_V6.md),
+[guía Git/Drive/Colab](COLAB_QUERY2LABEL_V6.md) y
+[notebook V6](COLAB_QUERY2LABEL_V6.ipynb), con todos los controles RUN apagados.
+
 ## V5: MLP compartido y masa total auxiliar
 
 Experimento aislado pendiente: mantiene el MLP compartido de V3 y activa el cabezal

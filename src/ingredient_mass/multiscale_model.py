@@ -9,7 +9,7 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 
-from .spatial_model import SpatialIngredientHeads, position_encoding
+from .spatial_model import SpatialIngredientHeads, position_encoding, MODEL_TYPE_V6
 
 
 class SmallDepthEncoder(nn.Module):
@@ -85,8 +85,10 @@ class ConvNeXtMultiscaleDepth(nn.Module):
     def __init__(self, ingredient_count, config, pretrained=True, torch_cache=None, heads_class=None):
         super().__init__()
         from torchvision.models import ConvNeXt_Small_Weights, convnext_small
-        if config.get("encoder_training") != "stages_2_4":
-            raise ValueError("V2 freezes stem/stage 1 and adjusts stages 2-4")
+        expected = "last_stage" if config.get("model_type") == MODEL_TYPE_V6 else "stages_2_4"
+        if config.get("encoder_training") != expected:
+            raise ValueError(f"This multiscale model requires encoder_training={expected}")
+        self.encoder_start = 6 if expected == "last_stage" else 2
         if int(config.get("attention_layers", 2)) != 2:
             raise ValueError("V2 uses two cross-attention layers")
         if torch_cache is not None:
@@ -100,7 +102,7 @@ class ConvNeXtMultiscaleDepth(nn.Module):
         self.set_encoder_trainable(False)
 
     def encoder_parameters(self):
-        for module in (self.features[2:], self.final_norm):
+        for module in (self.features[self.encoder_start:], self.final_norm):
             yield from module.parameters()
 
     def set_encoder_trainable(self, enabled):
@@ -113,10 +115,10 @@ class ConvNeXtMultiscaleDepth(nn.Module):
 
     def train(self, mode=True):
         super().train(mode)
-        for module in self.features[:2]:
+        for module in self.features[:self.encoder_start]:
             module.eval()
         if not self.encoder_trainable:
-            for module in self.features[2:]:
+            for module in self.features[self.encoder_start:]:
                 module.eval()
             self.final_norm.eval()
         return self
@@ -127,7 +129,7 @@ class ConvNeXtMultiscaleDepth(nn.Module):
         if depth.shape != (images.shape[0], 1, *images.shape[-2:]):
             raise ValueError("Expected aligned depth of shape B x 1 x H x W")
         with torch.no_grad():
-            frozen = self.features[:2](images)
-        high = self.features[2:6](frozen)
+            frozen = self.features[:self.encoder_start](images)
+        high = frozen if self.encoder_start == 6 else self.features[2:6](frozen)
         low = self.final_norm(self.features[6:](high))
         return self.heads(high, low, depth, return_attention)
