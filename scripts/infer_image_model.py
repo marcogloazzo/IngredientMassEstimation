@@ -153,6 +153,11 @@ def main():
                            "encoder": checkpoint["config"]["depth"]["encoder"],
                            "checkpoint_sha256": checkpoint["config"]["depth_checkpoint_sha256"]}
     output_dir = args.output_dir / args.image.stem
+    if checkpoint["config"].get("experiment_namespace") == "v2_grouped_asl":
+        from ingredient_mass.image_training import check_experiment_output
+        check_experiment_output(output_dir,checkpoint["config"])
+        if output_dir.exists() and any(output_dir.iterdir()):
+            raise FileExistsError("Grouped V2 prediction already exists; choose a NEW output directory")
     forbidden = protected_result_namespaces(checkpoint["model_type"])
     if checkpoint["model_type"] in CONDITIONAL_MODEL_TYPES and forbidden & {part.lower() for part in output_dir.parts}:
         raise ValueError("Predictions must not write inside an earlier version's namespace")

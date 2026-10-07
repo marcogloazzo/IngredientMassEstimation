@@ -21,6 +21,16 @@ def prepared_fingerprint(processed_dir):
     return {name: file_sha256(Path(processed_dir) / name) for name in ("records.jsonl", "vocabulary.json")}
 
 
+def check_experiment_output(path, config):
+    """A rerun of historical V2 must never write to an older experiment folder."""
+    if config.get("experiment_namespace") == "v2_grouped_asl":
+        parts = {part.lower() for part in Path(path).resolve().parts}
+        if "v2_grouped_asl" not in parts or {"v2","v3","v4","v5","v6"} & parts:
+            raise ValueError("Grouped V2 outputs must be inside a NEW v2_grouped_asl namespace, never historical results")
+        if config.get("split_policy") != "grouped_provisional" or config.get("presence_loss") != "asl":
+            raise ValueError("This historical V2 control requires ASL and the accepted grouped split")
+
+
 def load_prepared(processed_dir: Path, dataset_root: Path, config: dict):
     vocabulary = read_json(processed_dir / "vocabulary.json")
     records = read_jsonl(processed_dir / "records.jsonl")

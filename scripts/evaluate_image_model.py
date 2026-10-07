@@ -11,7 +11,7 @@ sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
 from ingredient_mass.data import nutrient_matrix, write_json
 from ingredient_mass.features import resolve_device
-from ingredient_mass.image_training import load_prepared, make_loader, positive_class_weights, run_epoch, save_predictions, prepared_fingerprint, auxiliary_mass_metrics
+from ingredient_mass.image_training import load_prepared, make_loader, positive_class_weights, run_epoch, save_predictions, prepared_fingerprint, auxiliary_mass_metrics, check_experiment_output
 from ingredient_mass.metrics import find_best_global_threshold, full_metrics
 from ingredient_mass.model import load_checkpoint
 from ingredient_mass.spatial_model import DEPTH_MODEL_TYPES, CONDITIONAL_MODEL_TYPES, MODEL_TYPE_V3, MODEL_TYPE_V4, MODEL_TYPE_V5, MODEL_TYPE_V6, protected_result_namespaces, model_from_checkpoint
@@ -36,6 +36,9 @@ def main():
     checkpoint = load_checkpoint(args.checkpoint, "cpu")
     default_report = {MODEL_TYPE_V3: "query2label_v3_evaluation", MODEL_TYPE_V4: "query2label_v4_evaluation", MODEL_TYPE_V5: "query2label_v5_evaluation",MODEL_TYPE_V6:"query2label_v6_evaluation"}.get(checkpoint["model_type"], "query2label_evaluation")
     args.output_dir = args.output_dir or PROJECT_ROOT / "outputs" / default_report
+    check_experiment_output(args.output_dir,checkpoint["config"])
+    if checkpoint["config"].get("experiment_namespace") == "v2_grouped_asl" and args.output_dir.exists() and any(args.output_dir.iterdir()):
+        raise FileExistsError("Grouped V2 report directory already has results; choose a NEW report tag")
     if checkpoint["model_type"] in CONDITIONAL_MODEL_TYPES:
         forbidden = protected_result_namespaces(checkpoint["model_type"])
         if forbidden & {part.lower() for part in args.output_dir.parts}:

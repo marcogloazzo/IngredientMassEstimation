@@ -1,5 +1,13 @@
 # Estimación de ingredientes y masa con bajo cómputo
 
+## Control V2 original con datos agrupados
+
+Reentrenamiento separado con **ASL y crop224 de V2 original**, usando el paquete
+agrupado provisional de V3. No modifica arquitectura ni resultados históricos;
+las salidas nuevas van a `v2_grouped_asl/`.
+Ver [notebook](COLAB_QUERY2LABEL_V2_GROUPED.ipynb) y
+[guía de preservación, Git y Drive](COLAB_QUERY2LABEL_V2_GROUPED.md).
+
 ## V6: ASL, escalas por clase, depth espacial y consultas CLIP
 
 Nueva variante aislada con ajuste exclusivo de etapa 4, consultas inicializadas

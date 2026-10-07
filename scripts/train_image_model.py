@@ -15,7 +15,7 @@ sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
 from ingredient_mass.data import nutrient_matrix, write_json
 from ingredient_mass.features import resolve_device
-from ingredient_mass.image_training import load_prepared, make_loader, positive_class_weights, run_epoch, prepared_fingerprint, save_predictions, auxiliary_mass_metrics
+from ingredient_mass.image_training import load_prepared, make_loader, positive_class_weights, run_epoch, prepared_fingerprint, save_predictions, auxiliary_mass_metrics, check_experiment_output
 from ingredient_mass.metrics import full_metrics
 from ingredient_mass.model import load_checkpoint, mean_training_mass
 from ingredient_mass.spatial_model import DEPTH_MODEL_TYPES, CONDITIONAL_MODEL_TYPES, SPECIALIZED_MODEL_TYPES, MODEL_TYPE_V3, MODEL_TYPE_V4, MODEL_TYPE_V5, MODEL_TYPE_V6, protected_result_namespaces, create_image_model
@@ -133,6 +133,7 @@ def main():
         return
     default_run = {MODEL_TYPE_V3: "query2label_100_v3_bce", MODEL_TYPE_V4: "query2label_100_v4_specialized", MODEL_TYPE_V5: "query2label_100_v5_auxiliary",MODEL_TYPE_V6:"query2label_100_v6_asl"}.get(config["model_type"], "query2label_100_asl")
     output_dir = (args.output_dir or PROJECT_ROOT / "artifacts" / default_run).resolve()
+    check_experiment_output(output_dir,config)
     if protected_result_namespaces(config["model_type"]) & {part.lower() for part in output_dir.parts}:
         raise ValueError("Training must use a new namespace, never an earlier version's results")
     if output_dir.exists() and any(output_dir.iterdir()) and args.resume is None:

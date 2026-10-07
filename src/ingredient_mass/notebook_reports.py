@@ -146,7 +146,8 @@ def show_diagnostic(report, title="Diagnóstico p × c", top_k=15):
 
 def show_comparison(report, title="Comparación con V5"):
     import matplotlib.pyplot as plt
-    candidate = "V6" if "v6" in (title+str(report.get("right",""))).lower() else "V5"
+    context = (title+str(report.get("right",""))).lower()
+    candidate = "V2 agrupada" if "v2_grouped" in context or "v2 agrupada" in context else "V6" if "v6" in context else "V5"
     print(report.get("warning", "No se registró la verificación de datos/split."))
     rows = []
     for row in report.get("metrics", []):
